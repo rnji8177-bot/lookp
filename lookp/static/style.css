@@ -1,0 +1,74 @@
+body {
+  background: #0a0a0a;
+  color: #00ff9d;
+  font-family: "Courier New", monospace;
+  text-align: center;
+}
+
+.banner {
+  background: #111;
+  color: #00ff9d;
+  padding: 25px;
+  font-size: 30px;
+  font-weight: bold;
+  text-shadow: 0 0 15px #00ff9d, 0 0 25px #ff00ff;
+  border-bottom: 2px solid #00ff9d;
+  letter-spacing: 2px;
+}
+
+.container {
+  margin-top: 60px;
+  background: rgba(0, 255, 157, 0.08);
+  padding: 40px;
+  border: 2px solid #00ff9d;
+  border-radius: 12px;
+  box-shadow: 0 0 25px #00ff9d, inset 0 0 10px #ff00ff;
+  display: inline-block;
+}
+
+input {
+  padding: 14px;
+  width: 300px;
+  border: 2px solid #00ff9d;
+  background: black;
+  color: #00ff9d;
+  font-size: 18px;
+  text-align: center;
+}
+
+button {
+  padding: 14px 30px;
+  margin-left: 10px;
+  background: #00ff9d;
+  color: black;
+  font-weight: bold;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 15px #00ff9d;
+  transition: 0.3s;
+}
+
+button:hover {
+  background: #ff00ff;
+  color: white;
+  box-shadow: 0 0 20px #ff00ff;
+}
+
+#result {
+  margin-top: 30px;
+  font-size: 20px;
+  white-space: pre-line;
+  text-shadow: 0 0 10px #00ff9d;
+}
+
+footer {
+  margin-top: 60px;
+  color: #ff00ff;
+  font-size: 18px;
+  text-shadow: 0 0 10px #00ff9d;
+}
+
+.dev {
+  color: #00ff9d;
+  font-weight: bold;
+}

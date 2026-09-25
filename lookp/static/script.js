@@ -29,10 +29,7 @@ async function lookupNumber() {
 
   try {
     const response = await fetch(`/lookup?number=${number}`);
-    
-    if (!response.ok) {
-      throw new Error("Proxy not responding");
-    }
+    if (!response.ok) throw new Error("Proxy not responding");
 
     const data = await response.json();
 

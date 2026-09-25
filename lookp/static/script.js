@@ -1,3 +1,22 @@
+function formatData(obj, indent = "") {
+  let output = "";
+  for (const [key, value] of Object.entries(obj)) {
+    if (Array.isArray(value)) {
+      output += `${indent}🔹 ${key.toUpperCase()}:\n`;
+      value.forEach((item, index) => {
+        output += `${indent}   ▶ RECORD ${index + 1}:\n`;
+        output += formatData(item, indent + "      ");
+      });
+    } else if (typeof value === "object" && value !== null) {
+      output += `${indent}🔹 ${key.toUpperCase()}:\n`;
+      output += formatData(value, indent + "   ");
+    } else {
+      output += `${indent}🔹 ${key.toUpperCase()}: ${value}\n`;
+    }
+  }
+  return output;
+}
+
 async function lookupNumber() {
   const number = document.getElementById("numberInput").value;
   const resultDiv = document.getElementById("result");
@@ -16,12 +35,7 @@ async function lookupNumber() {
     if (data.error || Object.keys(data).length === 0) {
       resultDiv.innerHTML = "❌ No data found!";
     } else {
-      let output = "";
-      // Loop through all keys in the JSON
-      for (const [key, value] of Object.entries(data)) {
-        output += `🔹 ${key.toUpperCase()}: ${value}\n`;
-      }
-      resultDiv.innerHTML = output;
+      resultDiv.innerHTML = formatData(data);
     }
   } catch (err) {
     resultDiv.innerHTML = `⚠️ Error: ${err.message}`;

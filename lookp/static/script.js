@@ -3,10 +3,14 @@ function formatData(obj, indent = "") {
   for (const [key, value] of Object.entries(obj)) {
     if (Array.isArray(value)) {
       output += `${indent}🔹 ${key.toUpperCase()}:\n`;
-      value.forEach((item, index) => {
-        output += `${indent}   ▶ RECORD ${index + 1}:\n`;
-        output += formatData(item, indent + "      ");
-      });
+      if (value.length === 0) {
+        output += `${indent}   (empty)\n`;
+      } else {
+        value.forEach((item, index) => {
+          output += `${indent}   ▶ RECORD ${index + 1}:\n`;
+          output += formatData(item, indent + "      ");
+        });
+      }
     } else if (typeof value === "object" && value !== null) {
       output += `${indent}🔹 ${key.toUpperCase()}:\n`;
       output += formatData(value, indent + "   ");

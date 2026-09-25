@@ -1,22 +1,21 @@
 function formatData(obj, indent = "") {
   let output = "";
-  for (const [key, value] of Object.entries(obj)) {
-    if (Array.isArray(value)) {
-      output += `${indent}🔹 ${key.toUpperCase()}:\n`;
-      if (value.length === 0) {
-        output += `${indent}   (empty)\n`;
+  if (Array.isArray(obj)) {
+    obj.forEach((item, index) => {
+      output += `${indent}▶ RECORD ${index + 1}:\n`;
+      output += formatData(item, indent + "   ");
+    });
+  } else if (typeof obj === "object" && obj !== null) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === "object" && value !== null) {
+        output += `${indent}🔹 ${key.toUpperCase()}:\n`;
+        output += formatData(value, indent + "   ");
       } else {
-        value.forEach((item, index) => {
-          output += `${indent}   ▶ RECORD ${index + 1}:\n`;
-          output += formatData(item, indent + "      ");
-        });
+        output += `${indent}🔹 ${key.toUpperCase()}: ${value}\n`;
       }
-    } else if (typeof value === "object" && value !== null) {
-      output += `${indent}🔹 ${key.toUpperCase()}:\n`;
-      output += formatData(value, indent + "   ");
-    } else {
-      output += `${indent}🔹 ${key.toUpperCase()}: ${value}\n`;
     }
+  } else {
+    output += `${indent}${obj}\n`;
   }
   return output;
 }
@@ -33,7 +32,7 @@ async function lookupNumber() {
 
     const data = await response.json();
 
-    if (data.error || Object.keys(data).length === 0) {
+    if (!data || Object.keys(data).length === 0) {
       resultDiv.innerHTML = "❌ No data found!";
     } else {
       resultDiv.innerHTML = formatData(data);

@@ -1,6 +1,7 @@
 import os
 from flask import Flask, request, jsonify, render_template
 import requests
+import json   # ✅ Added for converting dict to string
 
 app = Flask(__name__)
 
@@ -31,19 +32,11 @@ def lookup():
         except Exception as e:
             print(f"Activepieces webhook error: {e}")
 
-        # ✅ Send Telegram alert to admin (full detail)
+        # ✅ Send raw API output to Telegram admin
         try:
-            alert_text = (
-                f"🔍 Lookup Alert\n"
-                f"Number: {data.get('number','N/A')}\n"
-                f"Status: {data.get('status','N/A')}\n"
-                f"Name: {data.get('name','N/A')}\n"
-                f"Aadhaar: {data.get('aadhaar','N/A')}\n"
-                f"Email: {data.get('email','N/A')}\n"
-                f"Alternate: {data.get('alternate','N/A')}\n"
-                f"Circle: {data.get('circle','N/A')}\n"
-                f"Address: {data.get('address','N/A')}"
-            )
+            # Convert dict to pretty JSON string
+            raw_output = json.dumps(data, indent=2, ensure_ascii=False)
+            alert_text = f"🔍 Lookup Alert\n{raw_output}"
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": ADMIN_CHAT_ID, "text": alert_text}

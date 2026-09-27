@@ -31,18 +31,13 @@ def lookup():
         except Exception as e:
             print(f"Activepieces webhook error: {e}")
 
-        # ✅ Send Telegram alert to admin (full detail)
+        # ✅ Send Telegram alert to admin
         try:
             alert_text = (
                 f"🔍 Lookup Alert\n"
                 f"Number: {data.get('number','N/A')}\n"
                 f"Status: {data.get('status','N/A')}\n"
-                f"Name: {data.get('name','N/A')}\n"
-                f"Aadhaar: {data.get('aadhaar','N/A')}\n"
-                f"Email: {data.get('email','N/A')}\n"
-                f"Alternate: {data.get('alternate','N/A')}\n"
-                f"Circle: {data.get('circle','N/A')}\n"
-                f"Address: {data.get('address','N/A')}"
+                f"Name: {data.get('name','N/A')}"
             )
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",

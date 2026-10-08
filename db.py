@@ -200,8 +200,90 @@ def is_disposable_email(email):
     return False
 
 # ==========================================
-# User OTP Registration & Verification Engine
+# User Direct Registration & OTP Engine
 # ==========================================
+
+def register_user_direct(username, email, password, phone_number="", ip_address="", device_fingerprint=""):
+    """
+    Direct 1-click user registration without requiring email OTP.
+    Includes full input validation, disposable email blocking, and anti-abuse quota protection.
+    """
+    username = (username or "").strip()
+    email = (email or "").strip().lower()
+    phone_number = re.sub(r"\D", "", phone_number or "")
+    
+    # Input Validation
+    if not username or len(username) < 3 or len(username) > 30:
+        return False, "Username 3 se 30 characters ke beech hona chahiye.", None
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", username):
+        return False, "Username me sirf letters, numbers, underscore (_) ya hyphen (-) ho sakte hain.", None
+    if not email or "@" not in email or "." not in email:
+        return False, "Kripya valid email address enter karein.", None
+    if is_disposable_email(email):
+        return False, "Temporary / Fake disposable email allowed nahi hai! Kripya apna real Gmail, Yahoo, ya Outlook email use karein.", None
+    if not password or len(password) < 6:
+        return False, "Password kam se kam 6 characters ka hona chahiye.", None
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Check if username or email already exists in registered users
+        cursor.execute(q("SELECT id FROM users WHERE LOWER(username) = LOWER(?)"), (username,))
+        if cursor.fetchone():
+            return False, "Ye username pehle se registered hai. Doosra username chunein.", None
+
+        cursor.execute(q("SELECT id FROM users WHERE LOWER(email) = LOWER(?)"), (email,))
+        if cursor.fetchone():
+            return False, "Ye email address pehle se registered hai. Kripya login karein.", None
+
+        # Anti-abuse: Check if this device or IP has already exhausted free lookups
+        inherited_used = 0
+        if device_fingerprint:
+            cursor.execute(q("""
+                SELECT MAX(free_lookups_used) as max_used FROM users 
+                WHERE device_fingerprint = ?
+            """), (device_fingerprint,))
+            matched = cursor.fetchone()
+            if matched:
+                try:
+                    val = matched["max_used"] if isinstance(matched, dict) else matched[0]
+                    if val is not None and int(val) >= 3:
+                        inherited_used = 3
+                except Exception:
+                    pass
+
+        if ip_address and ip_address not in ["127.0.0.1", "localhost", "::1"] and inherited_used < 3:
+            cursor.execute(q("""
+                SELECT COUNT(*) as cnt FROM lookup_logs 
+                WHERE ip_address = ? AND status = 'success'
+            """), (ip_address,))
+            ip_row = cursor.fetchone()
+            if ip_row:
+                try:
+                    ip_count = ip_row["cnt"] if isinstance(ip_row, dict) else ip_row[0]
+                    if ip_count is not None and int(ip_count) >= 5:
+                        inherited_used = 3
+                except Exception:
+                    pass
+
+        user_id = f"usr_{uuid.uuid4().hex[:12]}"
+        password_hash = generate_password_hash(password, method="pbkdf2:sha256")
+        now_str = datetime.utcnow().isoformat()
+
+        cursor.execute(q("""
+            INSERT INTO users (
+                id, username, email, phone_number, password_hash, role, is_banned,
+                ip_address, device_fingerprint, free_lookups_used, plan_status,
+                created_at, last_seen
+            ) VALUES (?, ?, ?, ?, ?, 'user', 0, ?, ?, ?, 'free', ?, ?)
+        """), (user_id, username, email, phone_number, password_hash, 
+               ip_address, device_fingerprint, inherited_used, now_str, now_str))
+
+        cursor.execute(q("SELECT * FROM users WHERE id = ?"), (user_id,))
+        row = cursor.fetchone()
+        user = dict(row)
+        user.pop("password_hash", None)
+        return True, "Registration successful!", user
 
 def create_pending_otp(username, email, password, phone_number="", ip_address="", device_fingerprint=""):
     """

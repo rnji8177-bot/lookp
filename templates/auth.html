@@ -424,7 +424,7 @@
         </form>
 
         <!-- 2. REGISTER FORM -->
-        <form id="registerForm" class="auth-form hidden" onsubmit="handleRegisterStep1(event)">
+        <form id="registerForm" class="auth-form hidden" onsubmit="handleRegisterSubmit(event)">
           <div class="input-field-group">
             <div class="field-head">
               <span>Choose Username</span>
@@ -502,12 +502,12 @@
             </div>
           </div>
 
-          <div style="font-size:11px; color:#64748b; margin-top:8px;">
-            🛡️ A secure 6-digit verification code will be sent to confirm your email.
+          <div style="font-size:12px; color:#00f5a0; margin-top:8px; display:flex; align-items:center; gap:6px;">
+            <span>⚡ Instant Access: 3 Free OSINT phone lookups included!</span>
           </div>
 
           <button type="submit" id="regSubmitBtn" class="btn-cyber-submit">
-            <span class="btn-text">SEND VERIFICATION CODE ➔</span>
+            <span class="btn-text">CREATE SECURE ACCOUNT ➔</span>
           </button>
         </form>
 
@@ -753,7 +753,53 @@
       }
     }
 
-    // Step 1: Register form submit -> Request OTP
+    // Direct Instant Registration Handler
+    async function handleRegisterSubmit(e) {
+      e.preventDefault();
+      clearAlert();
+
+      const username = document.getElementById("regUsername").value.trim();
+      const email = document.getElementById("regEmail").value.trim().toLowerCase();
+      const pass = document.getElementById("regPassword").value;
+      const confirmPass = document.getElementById("regConfirmPassword").value;
+      const btn = document.getElementById("regSubmitBtn");
+
+      if (pass !== confirmPass) {
+        showAlert("Password aur Confirm Password match nahi ho rahe!");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.querySelector(".btn-text").textContent = "CREATING SECURE ACCOUNT...";
+
+      try {
+        const fp = await getClientFp();
+        const res = await fetch("/api/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, email, password: pass, fingerprint: fp })
+        });
+
+        const data = await res.json();
+        btn.disabled = false;
+        btn.querySelector(".btn-text").textContent = "CREATE SECURE ACCOUNT ➔";
+
+        if (res.ok && data.success) {
+          showAlert("🎉 Account successfully created! Entering dashboard...", false);
+          setTimeout(() => {
+            window.location.href = data.redirect || "/";
+          }, 600);
+        } else {
+          showAlert(data.error || "Registration fail hua. Kripya details check karein.");
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.querySelector(".btn-text").textContent = "CREATE SECURE ACCOUNT ➔";
+        showAlert("Network connection error: " + err.message);
+      }
+    }
+
+    // Step 1: Register form submit -> Request OTP (Preserved for future OTP toggle)
     let pendingRegEmail = "";
     let resendInterval = null;
 

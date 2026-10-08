@@ -180,6 +180,52 @@ def register_page():
         return redirect(url_for("home"))
     return render_template("auth.html", tab="register")
 
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    """Direct Fast User Registration without OTP"""
+    ip = get_client_ip()
+    if is_rate_limited(f"reg_direct_{ip}", max_attempts=10, window_seconds=600):
+        return jsonify({"error": "Bahut saare registration requests! Kripya thoda wait karein."}), 429
+
+    payload = request.get_json() or {}
+    username = payload.get("username", "").strip()
+    email = payload.get("email", "").strip().lower()
+    password = payload.get("password", "")
+    phone = payload.get("phone", "")
+    fp = payload.get("fingerprint") or get_device_fingerprint()
+
+    success, msg, user = db.register_user_direct(username, email, password, phone, ip, fp)
+    if not success:
+        return jsonify({"error": msg}), 400
+
+    # Auto-login the user immediately
+    session.permanent = True
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["role"] = user.get("role", "user")
+
+    # Send telegram welcome alert to Admin
+    try:
+        engine_name = "PostgreSQL" if db.IS_POSTGRES else "SQLite"
+        reg_msg = f"🎉 <b>NEW USER REGISTERED (Instant)</b>\n"
+        reg_msg += f"👤 <b>Username:</b> <code>{user['username']}</code>\n"
+        reg_msg += f"📧 <b>Email:</b> <code>{user['email']}</code>\n"
+        if user.get('phone_number'):
+            reg_msg += f"📞 <b>Phone:</b> <code>{user['phone_number']}</code>\n"
+        reg_msg += f"🌐 <b>IP:</b> <code>{ip}</code>\n"
+        reg_msg += f"🎯 <b>Free Scans:</b> 3/3 Available\n"
+        reg_msg += f"🗄️ <b>Database:</b> {engine_name}"
+        send_telegram_message(reg_msg)
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "message": f"Welcome {user['username']}! Registration complete.",
+        "redirect": "/",
+        "user": user
+    })
+
 @app.route("/api/send-otp", methods=["POST"])
 def api_send_otp():
     """Step 1 of Registration: Validates fields, blocks fake emails, sends 6-digit OTP"""

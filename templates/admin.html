@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OSINT Lookup - Admin Dashboard & Audit Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=3.0">
+  <style>
+    .admin-container {
+      max-width: 1350px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      padding: 20px;
+      border-radius: 12px;
+      background: rgba(18, 24, 38, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      position: relative;
+    }
+    .stat-val {
+      font-size: 28px;
+      font-weight: 700;
+      color: #00f5a0;
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 6px;
+    }
+    .stat-lbl {
+      color: #94a3b8;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .admin-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      font-size: 13px;
+    }
+    .admin-table th {
+      text-align: left;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #94a3b8;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+    }
+    .admin-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+      vertical-align: middle;
+    }
+    .table-wrapper {
+      background: rgba(18, 24, 38, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      overflow-x: auto;
+      margin-bottom: 35px;
+      padding: 10px;
+    }
+    .badge-pending {
+      background: rgba(234, 179, 8, 0.15);
+      color: #eab308;
+      border: 1px solid rgba(234, 179, 8, 0.3);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-approved {
+      background: rgba(0, 245, 160, 0.15);
+      color: #00f5a0;
+      border: 1px solid rgba(0, 245, 160, 0.3);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-rejected, .badge-banned {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .btn-approve {
+      background: #00f5a0;
+      color: #090d16;
+      border: none;
+      padding: 6px 14px;
+      font-weight: 700;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: 0.2s;
+    }
+    .btn-approve:hover {
+      background: #34d399;
+      box-shadow: 0 0 12px rgba(0, 245, 160, 0.4);
+    }
+    .btn-reject {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      padding: 6px 12px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      margin-left: 6px;
+    }
+    .btn-reject:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+    .filter-bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+      align-items: center;
+    }
+    .filter-input {
+      background: #090d16;
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      outline: none;
+    }
+    .filter-input:focus {
+      border-color: var(--accent-cyan);
+    }
+    .btn-view-data {
+      background: rgba(0, 210, 255, 0.15);
+      color: var(--accent-blue);
+      border: 1px solid rgba(0, 210, 255, 0.3);
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: 0.2s;
+    }
+    .btn-view-data:hover {
+      background: var(--accent-blue);
+      color: #000;
+    }
+    .btn-user-action {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: #94a3b8;
+      padding: 4px 9px;
+      border-radius: 5px;
+      font-size: 11px;
+      cursor: pointer;
+      margin-right: 4px;
+      transition: 0.2s;
+    }
+    .btn-user-action:hover {
+      color: #fff;
+      border-color: var(--accent-cyan);
+    }
+    .btn-user-ban {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #ef4444;
+    }
+    .btn-user-ban:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-glow glow-top"></div>
+
+  {% if not logged_in %}
+  <!-- Admin Authorization Form -->
+  <div class="login-box glass-panel" style="max-width: 420px; margin: 100px auto; padding: 36px 30px; border-radius: 16px; text-align: center;">
+    <div style="font-size: 42px; margin-bottom: 12px;">🛡️</div>
+    <h2>Admin Master Access</h2>
+    <p style="color:#94a3b8; font-size:13px; margin-top:6px;">Enter master key to unlock administration & telemetry control</p>
+
+    {% if error %}
+    <div style="background:rgba(239,68,68,0.2); color:#fca5a5; padding:10px 14px; border-radius:8px; margin:16px 0; font-size:13px; border:1px solid rgba(239,68,68,0.4);">
+      ⚠️ {{ error }}
+    </div>
+    {% endif %}
+
+    <form method="POST">
+      <input type="password" name="admin_key" class="filter-input" style="width:100%; margin:16px 0; padding:12px;" placeholder="Enter master password..." autocomplete="current-password" required autofocus>
+      <button type="submit" class="btn-scan" style="width:100%; justify-content:center;">Unlock Console</button>
+    </form>
+    <div style="margin-top:22px;">
+      <a href="/" style="color:#94a3b8; text-decoration:none; font-size:13px;">← Return to Lookup App</a>
+    </div>
+  </div>
+
+  {% else %}
+  <!-- Admin Dashboard -->
+  <div class="admin-container">
+    <header style="display:flex; justify-content:space-between; align-items:center; margin-bottom:30px; flex-wrap:wrap; gap:15px;">
+      <div>
+        <h1 style="font-size:26px; display:flex; align-items:center; gap:10px;">
+          <span>⚡ OSINT Master Dashboard</span>
+          <span style="font-size:12px; background:rgba(0,245,160,0.15); color:#00f5a0; padding:3px 8px; border-radius:6px;">ROOT ACCESS</span>
+        </h1>
+        <p style="color:#94a3b8; font-size:14px; margin-top:4px;">Manage payment approvals, registered user accounts & live audit logs</p>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a href="/" class="btn-tool" style="text-decoration:none;">📱 Open Main App</a>
+        <button class="btn-tool" onclick="openKeyModal()" style="color:var(--accent-cyan);">🔐 Change Master Key</button>
+        <a href="/admin/export-logs" class="btn-tool" style="text-decoration:none; color:var(--accent-gold);">📥 Export CSV</a>
+        <a href="/admin/logout" class="btn-tool" style="text-decoration:none; color:#ef4444;">Logout</a>
+      </div>
+    </header>
+
+    <!-- Telemetry Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-lbl">Pending Approvals</div>
+        <div class="stat-val" style="color: {% if stats.pending_approvals > 0 %}#eab308{% else %}#00f5a0{% endif %};">
+          {{ stats.pending_approvals }}
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Active Pro Users</div>
+        <div class="stat-val">{{ stats.active_subscribers }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Total Revenue (₹)</div>
+        <div class="stat-val" style="color:#ffd700;">₹{{ stats.total_revenue }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Total Lookups Ran</div>
+        <div class="stat-val">{{ stats.total_lookups }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-lbl">Registered Accounts</div>
+        <div class="stat-val">{{ stats.total_users }}</div>
+      </div>
+    </div>
+
+    <!-- 1. Pending Payment Requests Section -->
+    <h3 style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+      <span>📥 User Payment Approval Requests</span>
+      <span style="font-size:13px; color:#94a3b8;">(Click 'Approve' to instantly activate user plan)</span>
+    </h3>
+
+    <div class="table-wrapper">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>REQ ID</th>
+            <th>USER</th>
+            <th>PLAN</th>
+            <th>AMOUNT</th>
+            <th>UTR / TRANSACTION REF</th>
+            <th>DATE & TIME</th>
+            <th>STATUS</th>
+            <th>ACTIONS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if payment_requests %}
+            {% for req in payment_requests %}
+            <tr id="row-{{ req.id }}">
+              <td><code style="color:#00f5a0;">{{ req.id }}</code></td>
+              <td>
+                <b>{{ req.username or req.user_id[:10] }}</b>
+                <div style="font-size:11px; color:#64748b;">{{ req.email or '' }}</div>
+              </td>
+              <td><b>{{ 'Daily Pass (1 Day)' if req.plan_type == '1day' else 'Weekly Pass (7 Days)' }}</b></td>
+              <td style="color:#ffd700; font-weight:700;">₹{{ req.amount }}</td>
+              <td>
+                <code style="background:rgba(255,255,255,0.06); padding:4px 8px; border-radius:4px; font-weight:700; color:#fff;">
+                  {{ req.utr }}
+                </code>
+              </td>
+              <td style="color:#94a3b8; font-size:12px;">{{ req.created_at[:19].replace('T', ' ') }}</td>
+              <td>
+                <span class="badge-{{ req.status }}" id="badge-{{ req.id }}">
+                  {{ req.status.upper() }}
+                </span>
+              </td>
+              <td>
+                {% if req.status == 'pending' %}
+                <button class="btn-approve" onclick="handleAction('{{ req.id }}', 'approve')">✅ Approve</button>
+                <button class="btn-reject" onclick="handleAction('{{ req.id }}', 'reject')">✕ Reject</button>
+                {% else %}
+                <span style="color:#64748b; font-size:12px;">Reviewed</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="8" style="text-align:center; padding:30px; color:#64748b;">
+                No payment requests found yet.
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 2. Registered Users Management Section -->
+    <h3 style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+      <span>👥 Registered Users Management</span>
+      <span style="font-size:12px; background:rgba(139,92,246,0.15); color:#a78bfa; padding:2px 8px; border-radius:4px;">ACCOUNTS</span>
+    </h3>
+
+    <div class="table-wrapper">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>USER ID</th>
+            <th>USERNAME</th>
+            <th>EMAIL</th>
+            <th>PLAN STATUS</th>
+            <th>FREE USED</th>
+            <th>EXPIRES AT</th>
+            <th>STATUS</th>
+            <th>ACTIONS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if all_users %}
+            {% for u in all_users %}
+            <tr>
+              <td><code>{{ u.id[:10] }}...</code></td>
+              <td><b style="color:#fff;">{{ u.username or 'Anonymous' }}</b></td>
+              <td style="color:#94a3b8;">{{ u.email or 'N/A' }}</td>
+              <td>
+                {% if u.plan_status == 'premium' %}
+                  <span class="badge-approved">PRO ({{ u.plan_type|upper }})</span>
+                {% else %}
+                  <span style="color:#94a3b8;">Free Tier</span>
+                {% endif %}
+              </td>
+              <td><b style="color:{% if u.free_lookups_used >= 3 %}#ef4444{% else %}#00f5a0{% endif %};">{{ u.free_lookups_used }}/3</b></td>
+              <td style="font-size:12px; color:#94a3b8;">{{ u.plan_expires_at[:19].replace('T', ' ') if u.plan_expires_at else '-' }}</td>
+              <td>
+                {% if u.is_banned %}
+                  <span class="badge-banned">BANNED</span>
+                {% else %}
+                  <span class="badge-approved">ACTIVE</span>
+                {% endif %}
+              </td>
+              <td>
+                <button class="btn-user-action" onclick="grantVip('{{ u.id }}', 7)">+7D VIP</button>
+                <button class="btn-user-action" onclick="grantVip('{{ u.id }}', 1)">+1D Pass</button>
+                <button class="btn-user-action" onclick="resetQuota('{{ u.id }}')">Reset Quota</button>
+                <button class="btn-user-action btn-user-ban" onclick="toggleBan('{{ u.id }}')">
+                  {{ 'Unban' if u.is_banned else 'Ban' }}
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="8" style="text-align:center; padding:30px; color:#64748b;">
+                No registered users found.
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 3. Search & Lookup Activity Audit Logs -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+      <h3 style="display:flex; align-items:center; gap:8px;">
+        <span>🔍 User Search Logs & Fetched Data Archive</span>
+        <span style="font-size:12px; background:rgba(0,210,255,0.15); color:var(--accent-blue); padding:2px 8px; border-radius:4px;">AUDIT TRAIL</span>
+      </h3>
+    </div>
+
+    <!-- Filter Form -->
+    <form method="GET" class="filter-bar">
+      <input type="text" name="q" value="{{ search_query }}" placeholder="Filter by phone, username or IP..." class="filter-input" style="min-width:260px;">
+      <input type="date" name="date" value="{{ date_filter }}" class="filter-input">
+      <button type="submit" class="btn-tool">Filter Logs</button>
+      {% if search_query or date_filter %}
+      <a href="/admin" class="btn-tool" style="text-decoration:none; color:#ef4444;">Clear Filters</a>
+      {% endif %}
+    </form>
+
+    <div class="table-wrapper">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>LOG ID</th>
+            <th>DATE & TIME</th>
+            <th>USER</th>
+            <th>IP ADDRESS</th>
+            <th>PHONE NUMBER</th>
+            <th>RESULT DATA</th>
+            <th>USER CONTROLS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if logs %}
+            {% for log in logs %}
+            <tr>
+              <td><code>#{{ log.id }}</code></td>
+              <td style="color:#94a3b8; font-size:12px;">{{ log.timestamp[:19].replace('T', ' ') }}</td>
+              <td>
+                <b>{{ log.username or log.user_id[:10] }}</b>
+              </td>
+              <td><span style="font-family:'JetBrains Mono'; font-size:12px;">{{ log.ip_address or 'Local' }}</span></td>
+              <td>
+                <b style="color:#00f5a0; font-family:'JetBrains Mono';">+91 {{ log.phone_number }}</b>
+              </td>
+              <td>
+                <button class="btn-view-data" onclick="openDataModal({{ log.id }})">
+                  <span>👁️ View Fetched Data</span>
+                </button>
+              </td>
+              <td>
+                <button class="btn-user-action" onclick="grantVip('{{ log.user_id }}', 7)" title="Grant 7 Days VIP Free">+7D VIP</button>
+                <button class="btn-user-action" onclick="resetQuota('{{ log.user_id }}')" title="Reset Free Search Count to 0">Reset Quota</button>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" style="text-align:center; padding:30px; color:#64748b;">
+                No search logs found matching the filter criteria.
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <!-- Data Inspection Modal -->
+  <div id="dataModal" class="modal-overlay" style="display: none;">
+    <div class="modal-backdrop" onclick="closeDataModal()"></div>
+    <div class="modal-card glass-panel" style="max-width: 750px;">
+      <button class="modal-close" onclick="closeDataModal()">✕</button>
+      <div class="modal-header" style="text-align:left; border-bottom:1px solid var(--border-subtle); padding-bottom:15px;">
+        <h3 id="modalNumberTitle" style="color:var(--accent-cyan); font-family:'JetBrains Mono'; font-size:20px;">
+          +91 XXXXXXXXXX
+        </h3>
+        <p id="modalUserMeta" style="color:var(--text-muted); font-size:12px; margin-top:4px;">
+          User: ... | Timestamp: ...
+        </p>
+      </div>
+
+      <div style="margin-top:15px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:12px; font-weight:600; color:var(--text-muted);">EXACT DATA FETCHED FOR USER:</span>
+          <button class="btn-tool" onclick="copyModalData()" style="padding:4px 10px; font-size:11px;">Copy JSON</button>
+        </div>
+        <pre id="modalJsonDisplay" style="background:#090d16; border:1px solid var(--border-subtle); padding:16px; border-radius:8px; overflow-x:auto; font-family:'JetBrains Mono'; font-size:12px; color:#00f5a0; max-height:450px; white-space:pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Change Access Key Modal -->
+  <div id="keyModal" class="modal-overlay" style="display: none;">
+    <div class="modal-backdrop" onclick="closeKeyModal()"></div>
+    <div class="modal-card glass-panel" style="max-width: 440px;">
+      <button class="modal-close" onclick="closeKeyModal()">✕</button>
+      <div class="modal-header" style="text-align:center;">
+        <div style="font-size:32px; margin-bottom:8px;">🔐</div>
+        <h3>Update Admin Master Key</h3>
+        <p style="color:var(--text-muted); font-size:13px; margin-top:4px;">Set new secure master password</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+        <div>
+          <label style="font-size:11px; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">Current Master Key</label>
+          <input type="password" id="oldKeyInput" class="filter-input" style="width:100%;" placeholder="Enter current master key..." autocomplete="off">
+        </div>
+        <div>
+          <label style="font-size:11px; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">New Master Key (Min 6 chars)</label>
+          <input type="password" id="newKeyInput" class="filter-input" style="width:100%;" placeholder="Enter new master key..." autocomplete="off">
+        </div>
+        <div>
+          <label style="font-size:11px; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">Confirm New Master Key</label>
+          <input type="password" id="confirmKeyInput" class="filter-input" style="width:100%;" placeholder="Re-enter new master key..." autocomplete="off">
+        </div>
+        <button id="btnSaveKey" class="btn-scan" style="width:100%; justify-content:center; margin-top:8px;" onclick="submitKeyChange()">
+          Save & Update Master Key
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentModalPayload = "";
+
+    async function handleAction(reqId, action) {
+      if (!confirm(`Are you sure you want to ${action.toUpperCase()} request ${reqId}?`)) return;
+
+      try {
+        const response = await fetch('/api/payment-review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: reqId, action: action })
+        });
+        const res = await response.json();
+
+        if (res.success) {
+          alert(`Successfully ${action}ed!`);
+          window.location.reload();
+        } else {
+          alert('Error: ' + (res.error || 'Failed to update'));
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      }
+    }
+
+    async function openDataModal(logId) {
+      document.getElementById('dataModal').style.display = 'flex';
+      document.getElementById('modalNumberTitle').textContent = "Fetching log details...";
+      document.getElementById('modalJsonDisplay').textContent = "Loading...";
+
+      try {
+        const res = await fetch(`/admin/api/log/${logId}`);
+        const data = await res.json();
+
+        document.getElementById('modalNumberTitle').textContent = `+91 ${data.phone_number}`;
+        document.getElementById('modalUserMeta').textContent = `User: ${data.username || data.user_id} | IP: ${data.ip_address || 'N/A'} | Time: ${data.timestamp}`;
+
+        let parsed = data.data_payload;
+        try {
+          if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+          currentModalPayload = JSON.stringify(parsed, null, 2);
+          document.getElementById('modalJsonDisplay').textContent = currentModalPayload;
+        } catch (e) {
+          currentModalPayload = data.data_payload || "No data recorded";
+          document.getElementById('modalJsonDisplay').textContent = currentModalPayload;
+        }
+      } catch (err) {
+        document.getElementById('modalJsonDisplay').textContent = "Error loading data: " + err.message;
+      }
+    }
+
+    function closeDataModal() {
+      document.getElementById('dataModal').style.display = 'none';
+    }
+
+    function copyModalData() {
+      navigator.clipboard.writeText(currentModalPayload).then(() => {
+        alert("Payload copied to clipboard!");
+      });
+    }
+
+    async function grantVip(userId, days) {
+      if (!confirm(`Grant ${days} days VIP access to user ${userId}?`)) return;
+      try {
+        const res = await fetch('/admin/user-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'grant_vip', user_id: userId, days: days })
+        });
+        const d = await res.json();
+        if (d.success) {
+          alert(`VIP granted until ${d.new_expiry}!`);
+          window.location.reload();
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    }
+
+    async function resetQuota(userId) {
+      if (!confirm(`Reset free search quota to 0 for user ${userId}?`)) return;
+      try {
+        const res = await fetch('/admin/user-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset_quota', user_id: userId })
+        });
+        const d = await res.json();
+        if (d.success) {
+          alert(`User quota reset to 0!`);
+          window.location.reload();
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    }
+
+    async function toggleBan(userId) {
+      if (!confirm(`Toggle ban status for user ${userId}?`)) return;
+      try {
+        const res = await fetch('/admin/user-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'toggle_ban', user_id: userId })
+        });
+        const d = await res.json();
+        if (d.success) {
+          alert(`User ban status updated to: ${d.is_banned ? 'BANNED' : 'ACTIVE'}`);
+          window.location.reload();
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    }
+
+    function openKeyModal() {
+      document.getElementById('keyModal').style.display = 'flex';
+      document.getElementById('oldKeyInput').value = '';
+      document.getElementById('newKeyInput').value = '';
+      document.getElementById('confirmKeyInput').value = '';
+    }
+
+    function closeKeyModal() {
+      document.getElementById('keyModal').style.display = 'none';
+    }
+
+    async function submitKeyChange() {
+      const oldKey = document.getElementById('oldKeyInput').value;
+      const newKey = document.getElementById('newKeyInput').value;
+      const confirmKey = document.getElementById('confirmKeyInput').value;
+
+      if (!oldKey) {
+        alert("Kripya current master key enter karein!");
+        return;
+      }
+      if (newKey.length < 6) {
+        alert("Nayi master key kam se kam 6 characters ki honi chahiye!");
+        return;
+      }
+      if (newKey !== confirmKey) {
+        alert("New key aur confirm key match nahi ho rahe!");
+        return;
+      }
+
+      const btn = document.getElementById('btnSaveKey');
+      btn.disabled = true;
+      btn.textContent = "Updating...";
+
+      try {
+        const res = await fetch('/admin/update-key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ old_key: oldKey, new_key: newKey })
+        });
+        const data = await res.json();
+        btn.disabled = false;
+        btn.textContent = "Save & Update Master Key";
+
+        if (res.ok && data.success) {
+          alert("✅ Master Key successfully change ho gayi hai!");
+          closeKeyModal();
+        } else {
+          alert("⚠️ Error: " + (data.error || "Key update failed"));
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Save & Update Master Key";
+        alert("Network error: " + err.message);
+      }
+    }
+  </script>
+  {% endif %}
+</body>
+</html>

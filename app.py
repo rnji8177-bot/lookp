@@ -99,7 +99,7 @@ def trigger_webhook_async(payload):
 
 def _send_email_otp_worker(recipient_email, otp_code, username):
     """Sends OTP via SMTP (Gmail, etc.) if configured"""
-    if not SMTP_USER or not SMTP_PASS:
+    if not SMTP_USER or not SMTP_PASS or SMTP_PASS.lower() in ["none", "disable", "disabled"]:
         return
     try:
         msg = MIMEMultipart("alternative")

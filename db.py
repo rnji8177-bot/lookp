@@ -3,45 +3,73 @@ import os
 import uuid
 import json
 import re
+import secrets
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from werkzeug.security import generate_password_hash, check_password_hash
+
+# Try importing psycopg2 for cloud PostgreSQL support
+try:
+    import psycopg2
+    import psycopg2.extras
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+IS_POSTGRES = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
 
 def get_db_path():
     env_path = os.getenv("DB_PATH")
     if env_path:
         return env_path
+    # Check if a persistent container volume like /app/data exists
+    if os.path.isdir("/app/data"):
+        return "/app/data/lookup_data.db"
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    primary_path = os.path.join(base_dir, "lookup_data.db")
-    try:
-        test_file = os.path.join(base_dir, ".db_perm_test")
-        with open(test_file, "w") as f:
-            f.write("ok")
-        if os.path.exists(test_file):
-            os.remove(test_file)
-        return primary_path
-    except Exception:
-        import tempfile
-        return os.path.join(tempfile.gettempdir(), "lookup_data.db")
+    return os.path.join(base_dir, "lookup_data.db")
 
 DB_PATH = get_db_path()
 
+# Query placeholder translator (SQLite uses ?, PostgreSQL uses %s)
+def q(query):
+    if IS_POSTGRES:
+        return query.replace("?", "%s")
+    return query
+
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(get_db_path(), timeout=15)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
-
+    if IS_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(get_db_path(), timeout=15)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
         
         # 1. Users Table with Authentication & Membership
-        cursor.execute("""
+        cursor.execute(q("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE,
@@ -60,41 +88,25 @@ def init_db():
                 created_at TEXT,
                 last_seen TEXT
             )
-        """)
+        """))
         
-        # Safe Migrations for users table (in case existing db is present)
-        user_columns = [
-            ("username", "TEXT UNIQUE"),
-            ("email", "TEXT UNIQUE"),
-            ("phone_number", "TEXT"),
-            ("password_hash", "TEXT"),
-            ("role", "TEXT DEFAULT 'user'"),
-            ("is_banned", "INTEGER DEFAULT 0"),
-            ("device_fingerprint", "TEXT"),
-            ("free_lookups_used", "INTEGER DEFAULT 0"),
-            ("plan_status", "TEXT DEFAULT 'free'"),
-            ("plan_type", "TEXT DEFAULT NULL"),
-            ("plan_activated_at", "TEXT DEFAULT NULL"),
-            ("plan_expires_at", "TEXT DEFAULT NULL"),
-            ("created_at", "TEXT"),
-            ("last_seen", "TEXT")
-        ]
-        for col_name, col_type in user_columns:
-            try:
-                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-            except Exception:
-                pass
+        # 2. Pending Registrations & OTP Table
+        cursor.execute(q("""
+            CREATE TABLE IF NOT EXISTS pending_registrations (
+                email TEXT PRIMARY KEY,
+                username TEXT,
+                password_hash TEXT,
+                phone_number TEXT,
+                otp_code TEXT,
+                ip_address TEXT,
+                device_fingerprint TEXT,
+                created_at TEXT,
+                expires_at TEXT
+            )
+        """))
 
-        # Indexes for fast lookup
-        try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_fp ON users(device_fingerprint)")
-        except Exception:
-            pass
-
-        # 2. Payment Requests Table
-        cursor.execute("""
+        # 3. Payment Requests Table
+        cursor.execute(q("""
             CREATE TABLE IF NOT EXISTS payment_requests (
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
@@ -104,56 +116,96 @@ def init_db():
                 user_note TEXT,
                 status TEXT DEFAULT 'pending',
                 created_at TEXT,
-                reviewed_at TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
+                reviewed_at TEXT
             )
-        """)
+        """))
+
+        # 4. Lookup Activity Logs Table
+        if IS_POSTGRES:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lookup_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT,
+                    ip_address TEXT,
+                    device_fingerprint TEXT,
+                    phone_number TEXT,
+                    status TEXT,
+                    data_payload TEXT,
+                    timestamp TEXT
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lookup_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    ip_address TEXT,
+                    device_fingerprint TEXT,
+                    phone_number TEXT,
+                    status TEXT,
+                    data_payload TEXT,
+                    timestamp TEXT
+                )
+            """)
+
+        # Indexes for fast lookup
         try:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pay_utr ON payment_requests(utr)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pay_user ON payment_requests(user_id)")
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_users_fp ON users(device_fingerprint)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_pay_utr ON payment_requests(utr)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_pay_user ON payment_requests(user_id)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_logs_user ON lookup_logs(user_id)"))
+            cursor.execute(q("CREATE INDEX IF NOT EXISTS idx_logs_phone ON lookup_logs(phone_number)"))
         except Exception:
             pass
-        
-        # 3. Comprehensive Lookup Activity Logs
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS lookup_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT,
-                ip_address TEXT,
-                device_fingerprint TEXT,
-                phone_number TEXT,
-                status TEXT,
-                data_payload TEXT,
-                timestamp TEXT
-            )
-        """)
-        
-        # Safe Migrations for lookup_logs
-        for col, ctype in [("ip_address", "TEXT"), ("device_fingerprint", "TEXT"), ("data_payload", "TEXT")]:
-            try:
-                cursor.execute(f"ALTER TABLE lookup_logs ADD COLUMN {col} {ctype}")
-            except Exception:
-                pass
-
-        try:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_user ON lookup_logs(user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_phone ON lookup_logs(phone_number)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_time ON lookup_logs(timestamp)")
-        except Exception:
-            pass
-
-        conn.commit()
 
 def now_iso():
     return datetime.utcnow().isoformat()
 
 # ==========================================
-# User Authentication & Registration Engine
+# Anti-Fraud: Disposable / Temporary Email Blocker
+# ==========================================
+DISPOSABLE_DOMAINS = {
+    "leafflip.com", "tempmail.com", "mailinator.com", "guerrillamail.com",
+    "10minutemail.com", "yopmail.com", "sharklasers.com", "dispostable.com",
+    "getairmail.com", "fakeinbox.com", "trashmail.com", "generator.email",
+    "tempail.com", "mohmal.com", "emailondeck.com", "mytemp.email",
+    "crazymailing.com", "dropmail.me", "inboxkitten.com", "nada.ltd",
+    "getnada.com", "burnermail.io", "temp-mail.org", "fakemailgenerator.com",
+    "trashmail.net", "trashmail.org", "fakemail.net", "throwawaymail.com",
+    "tempmailaddress.com", "tempmailgen.com", "inboxbear.com", "bupmail.com",
+    "chacuo.net", "0-mail.com", "guerrillamailblock.com", "pokemail.net",
+    "spam4.me", "bccto.me", "maildrop.cc", "disposablemail.com", "boximail.com",
+    "tempr.email", "discard.email", "discardmail.com", "spambox.us", "mailcatch.com"
+}
+
+def is_disposable_email(email):
+    """
+    Detects if an email uses a known temporary, fake, or disposable domain.
+    """
+    if not email or "@" not in email:
+        return True
+    domain = email.strip().split("@")[-1].lower()
+    
+    if domain in DISPOSABLE_DOMAINS:
+        return True
+        
+    # Check suspicious patterns in domain name
+    suspicious_keywords = ["temp", "dispos", "fake", "trash", "throwaway", "burner", "generator", "10min"]
+    for kw in suspicious_keywords:
+        if kw in domain and domain not in ["temple.edu"]:
+            return True
+            
+    return False
+
+# ==========================================
+# User OTP Registration & Verification Engine
 # ==========================================
 
-def register_user(username, email, password, phone_number="", ip_address="", device_fingerprint=""):
+def create_pending_otp(username, email, password, phone_number="", ip_address="", device_fingerprint=""):
     """
-    Registers a new user with strong password hashing and anti-abuse quota protection.
+    Generates a secure 6-digit OTP for registration and saves in pending_registrations.
     """
     username = (username or "").strip()
     email = (email or "").strip().lower()
@@ -161,60 +213,123 @@ def register_user(username, email, password, phone_number="", ip_address="", dev
     
     # Input Validation
     if not username or len(username) < 3 or len(username) > 30:
-        return False, "Username 3 se 30 characters ke beech hona chahiye."
+        return False, "Username 3 se 30 characters ke beech hona chahiye.", None
     if not re.match(r"^[a-zA-Z0-9_.-]+$", username):
-        return False, "Username me sirf letters, numbers, underscore (_) ya hyphen (-) ho sakte hain."
+        return False, "Username me sirf letters, numbers, underscore (_) ya hyphen (-) ho sakte hain.", None
     if not email or "@" not in email or "." not in email:
-        return False, "Kripya valid email address enter karein."
+        return False, "Kripya valid email address enter karein.", None
+    if is_disposable_email(email):
+        return False, "Temporary / Fake disposable email allowed nahi hai! Kripya apna real Gmail, Yahoo, ya Outlook email use karein.", None
     if not password or len(password) < 6:
-        return False, "Password kam se kam 6 characters ka hona chahiye."
+        return False, "Password kam se kam 6 characters ka hona chahiye.", None
 
     with get_connection() as conn:
         cursor = conn.cursor()
         
-        # Check if username or email already exists
-        cursor.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+        # Check if username or email already exists in registered users
+        cursor.execute(q("SELECT id FROM users WHERE LOWER(username) = LOWER(?)"), (username,))
         if cursor.fetchone():
-            return False, "Ye username pehle se registered hai. Doosra username chunein."
+            return False, "Ye username pehle se registered hai. Doosra username chunein.", None
 
-        cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,))
+        cursor.execute(q("SELECT id FROM users WHERE LOWER(email) = LOWER(?)"), (email,))
         if cursor.fetchone():
-            return False, "Ye email address pehle se registered hai. Kripya login karein."
+            return False, "Ye email address pehle se registered hai. Kripya login karein.", None
 
-        # Anti-abuse: Check if this physical device fingerprint or IP already exhausted free scans
+        # Generate 6-digit OTP code
+        otp_code = str(secrets.randbelow(900000) + 100000)
+        password_hash = generate_password_hash(password, method="pbkdf2:sha256")
+        now = datetime.utcnow()
+        now_str = now.isoformat()
+        expires_at = (now + timedelta(minutes=10)).isoformat()
+
+        # Delete any old pending record for this email
+        cursor.execute(q("DELETE FROM pending_registrations WHERE LOWER(email) = LOWER(?)"), (email,))
+
+        # Insert new pending registration record
+        cursor.execute(q("""
+            INSERT INTO pending_registrations (
+                email, username, password_hash, phone_number, otp_code,
+                ip_address, device_fingerprint, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """), (email, username, password_hash, phone_number, otp_code, ip_address, device_fingerprint, now_str, expires_at))
+
+        return True, "OTP successfully generated", otp_code
+
+def verify_registration_otp(email, otp_code):
+    """
+    Verifies the 6-digit OTP and completes user account registration.
+    """
+    email = (email or "").strip().lower()
+    otp_code = (otp_code or "").strip()
+
+    if not email or not otp_code:
+        return False, "Email aur OTP code enter karein."
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(q("SELECT * FROM pending_registrations WHERE LOWER(email) = LOWER(?)"), (email,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return False, "Pending registration nahi mili ya expire ho gayi. Kripya dobara register karein."
+        
+        pending = dict(row)
+        now = datetime.utcnow()
+
+        try:
+            exp_time = datetime.fromisoformat(pending["expires_at"])
+            if now > exp_time:
+                cursor.execute(q("DELETE FROM pending_registrations WHERE LOWER(email) = LOWER(?)"), (email,))
+                return False, "OTP expire ho gaya hai! Kripya 'Resend OTP' par click karein."
+        except Exception:
+            pass
+
+        if pending["otp_code"] != otp_code:
+            return False, "Galat OTP code! Kripya dobara check karke enter karein."
+
+        # Anti-abuse: check physical device fingerprint & IP
         inherited_used = 0
+        device_fingerprint = pending.get("device_fingerprint") or ""
+        ip_address = pending.get("ip_address") or ""
+
         if device_fingerprint:
-            cursor.execute("""
+            cursor.execute(q("""
                 SELECT MAX(free_lookups_used) FROM users 
                 WHERE device_fingerprint = ?
-            """, (device_fingerprint,))
+            """), (device_fingerprint,))
             matched = cursor.fetchone()
-            if matched and matched[0] is not None and matched[0] >= 3:
-                inherited_used = 3
+            if matched and matched["max"] is not None if IS_POSTGRES else matched[0] is not None:
+                val = matched["max"] if IS_POSTGRES else matched[0]
+                if val >= 3:
+                    inherited_used = 3
 
         if ip_address and ip_address not in ["127.0.0.1", "localhost", "::1"] and inherited_used < 3:
-            cursor.execute("""
-                SELECT COUNT(*) FROM lookup_logs 
+            cursor.execute(q("""
+                SELECT COUNT(*) as cnt FROM lookup_logs 
                 WHERE ip_address = ? AND status = 'success'
-            """, (ip_address,))
-            ip_count = cursor.fetchone()[0]
+            """), (ip_address,))
+            ip_row = cursor.fetchone()
+            ip_count = ip_row["cnt"] if IS_POSTGRES else ip_row[0]
             if ip_count >= 5:
                 inherited_used = 3
 
         user_id = f"usr_{uuid.uuid4().hex[:12]}"
-        password_hash = generate_password_hash(password, method="pbkdf2:sha256")
-        now_str = now_iso()
+        now_str = now.isoformat()
 
-        cursor.execute("""
+        # Insert into verified users table
+        cursor.execute(q("""
             INSERT INTO users (
                 id, username, email, phone_number, password_hash, role, is_banned,
                 ip_address, device_fingerprint, free_lookups_used, plan_status,
                 created_at, last_seen
             ) VALUES (?, ?, ?, ?, ?, 'user', 0, ?, ?, ?, 'free', ?, ?)
-        """, (user_id, username, email, phone_number, password_hash, ip_address, device_fingerprint, inherited_used, now_str, now_str))
-        conn.commit()
+        """), (user_id, pending["username"], pending["email"], pending["phone_number"], 
+               pending["password_hash"], ip_address, device_fingerprint, inherited_used, now_str, now_str))
 
-        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        # Clear pending registration
+        cursor.execute(q("DELETE FROM pending_registrations WHERE LOWER(email) = LOWER(?)"), (email,))
+
+        cursor.execute(q("SELECT * FROM users WHERE id = ?"), (user_id,))
         user = dict(cursor.fetchone())
         user.pop("password_hash", None)
         return True, user
@@ -229,10 +344,10 @@ def authenticate_user(identifier, password, ip_address="", device_fingerprint=""
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(q("""
             SELECT * FROM users 
             WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)
-        """, (ident, ident))
+        """), (ident, ident))
         row = cursor.fetchone()
         
         if not row:
@@ -250,22 +365,18 @@ def authenticate_user(identifier, password, ip_address="", device_fingerprint=""
 
         # Update last seen, IP, and fingerprint
         now_str = now_iso()
-        cursor.execute("""
+        cursor.execute(q("""
             UPDATE users 
             SET last_seen = ?,
                 ip_address = COALESCE(NULLIF(?, ''), ip_address),
                 device_fingerprint = COALESCE(NULLIF(?, ''), device_fingerprint)
             WHERE id = ?
-        """, (now_str, ip_address, device_fingerprint, user["id"]))
-        conn.commit()
+        """), (now_str, ip_address, device_fingerprint, user["id"]))
 
         user.pop("password_hash", None)
         return True, user
 
 def get_user_by_id(user_id):
-    """
-    Fetches user profile by ID, auto-checks plan expiration.
-    """
     if not user_id:
         return None
     with get_connection() as conn:
@@ -273,7 +384,7 @@ def get_user_by_id(user_id):
         now = datetime.utcnow()
         now_str = now.isoformat()
 
-        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        cursor.execute(q("SELECT * FROM users WHERE id = ?"), (user_id,))
         row = cursor.fetchone()
         if not row:
             return None
@@ -284,8 +395,7 @@ def get_user_by_id(user_id):
             try:
                 exp = datetime.fromisoformat(user["plan_expires_at"])
                 if now > exp:
-                    cursor.execute("UPDATE users SET plan_status = 'expired' WHERE id = ?", (user_id,))
-                    conn.commit()
+                    cursor.execute(q("UPDATE users SET plan_status = 'expired' WHERE id = ?"), (user_id,))
                     user["plan_status"] = "expired"
             except Exception:
                 pass
@@ -298,7 +408,7 @@ def get_user_by_username(username):
         return None
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(?)", (username.strip(),))
+        cursor.execute(q("SELECT * FROM users WHERE LOWER(username) = LOWER(?)"), (username.strip(),))
         row = cursor.fetchone()
         if not row:
             return None
@@ -327,26 +437,27 @@ def can_user_lookup(user_id, ip_address="", device_fingerprint=""):
         
         # 1. Device fingerprint check
         if device_fingerprint:
-            cursor.execute("""
-                SELECT COUNT(*) FROM users 
+            cursor.execute(q("""
+                SELECT COUNT(*) as cnt FROM users 
                 WHERE device_fingerprint = ? AND free_lookups_used >= 3 AND plan_status != 'premium'
-            """, (device_fingerprint,))
-            if cursor.fetchone()[0] > 0 and user.get("free_lookups_used", 0) < 3:
+            """), (device_fingerprint,))
+            row = cursor.fetchone()
+            cnt = row["cnt"] if IS_POSTGRES else row[0]
+            if cnt > 0 and user.get("free_lookups_used", 0) < 3:
                 user["free_lookups_used"] = 3
-                cursor.execute("UPDATE users SET free_lookups_used = 3 WHERE id = ?", (user_id,))
-                conn.commit()
+                cursor.execute(q("UPDATE users SET free_lookups_used = 3 WHERE id = ?"), (user_id,))
 
         # 2. IP rate-check
         if ip_address and ip_address not in ["127.0.0.1", "localhost", "::1"]:
-            cursor.execute("""
-                SELECT COUNT(*) FROM lookup_logs 
+            cursor.execute(q("""
+                SELECT COUNT(*) as cnt FROM lookup_logs 
                 WHERE ip_address = ? AND status = 'success'
-            """, (ip_address,))
-            total_ip_lookups = cursor.fetchone()[0]
+            """), (ip_address,))
+            row = cursor.fetchone()
+            total_ip_lookups = row["cnt"] if IS_POSTGRES else row[0]
             if total_ip_lookups >= 6 and user.get("free_lookups_used", 0) < 3:
                 user["free_lookups_used"] = 3
-                cursor.execute("UPDATE users SET free_lookups_used = 3 WHERE id = ?", (user_id,))
-                conn.commit()
+                cursor.execute(q("UPDATE users SET free_lookups_used = 3 WHERE id = ?"), (user_id,))
 
     free_used = user.get("free_lookups_used", 0)
     if free_used < 3:
@@ -362,28 +473,25 @@ def record_lookup_usage(user_id, phone_number, ip_address="", device_fingerprint
         cursor = conn.cursor()
         now_str = now_iso()
         
-        # Only increment free count if user is not on active premium
         if user["plan_status"] != "premium":
-            cursor.execute("""
+            cursor.execute(q("""
                 UPDATE users 
                 SET free_lookups_used = free_lookups_used + 1, last_seen = ?
                 WHERE id = ?
-            """, (now_str, user_id))
+            """), (now_str, user_id))
 
             if device_fingerprint:
-                cursor.execute("""
+                cursor.execute(q("""
                     UPDATE users 
                     SET free_lookups_used = free_lookups_used + 1 
                     WHERE device_fingerprint = ? AND id != ? AND plan_status != 'premium'
-                """, (device_fingerprint, user_id))
+                """), (device_fingerprint, user_id))
 
-        # Store complete OSINT data payload in logs
         payload_str = json.dumps(data_payload, ensure_ascii=False) if data_payload else "{}"
-        cursor.execute("""
+        cursor.execute(q("""
             INSERT INTO lookup_logs (user_id, ip_address, device_fingerprint, phone_number, status, data_payload, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, ip_address, device_fingerprint, phone_number, "success" if success else "failed", payload_str, now_str))
-        conn.commit()
+        """), (user_id, ip_address, device_fingerprint, phone_number, "success" if success else "failed", payload_str, now_str))
 
 # ==========================================
 # Payment Management & UTR Verification
@@ -393,7 +501,7 @@ def is_utr_already_used(utr):
     clean_utr = utr.strip()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, status FROM payment_requests WHERE utr = ?", (clean_utr,))
+        cursor.execute(q("SELECT id, status FROM payment_requests WHERE utr = ?"), (clean_utr,))
         row = cursor.fetchone()
         return bool(row)
 
@@ -405,51 +513,40 @@ def create_payment_request(user_id, plan_type, amount, utr, user_note=""):
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(q("""
             INSERT INTO payment_requests (id, user_id, plan_type, amount, utr, user_note, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-        """, (req_id, user_id, plan_type, amount, clean_utr, clean_note, now_str))
-        conn.commit()
+        """), (req_id, user_id, plan_type, amount, clean_utr, clean_note, now_str))
         
-        cursor.execute("SELECT * FROM payment_requests WHERE id = ?", (req_id,))
+        cursor.execute(q("SELECT * FROM payment_requests WHERE id = ?"), (req_id,))
         return dict(cursor.fetchone())
 
 def get_latest_pending_payment(user_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(q("""
             SELECT * FROM payment_requests 
             WHERE user_id = ? AND status = 'pending'
             ORDER BY created_at DESC LIMIT 1
-        """, (user_id,))
+        """), (user_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
-
-def get_user_payment_history(user_id):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM payment_requests 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC LIMIT 10
-        """, (user_id,))
-        return [dict(r) for r in cursor.fetchall()]
 
 def get_all_payment_requests():
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(q("""
             SELECT p.*, u.username, u.email, u.free_lookups_used, u.plan_status as current_user_plan
             FROM payment_requests p
             LEFT JOIN users u ON p.user_id = u.id
             ORDER BY p.created_at DESC
-        """)
+        """))
         return [dict(r) for r in cursor.fetchall()]
 
 def approve_payment_request(req_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM payment_requests WHERE id = ?", (req_id,))
+        cursor.execute(q("SELECT * FROM payment_requests WHERE id = ?"), (req_id,))
         req = cursor.fetchone()
         if not req:
             return False, "Request not found"
@@ -460,7 +557,7 @@ def approve_payment_request(req_id):
         now = datetime.utcnow()
         days_to_add = 1 if plan_type == "1day" else 7
         
-        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        cursor.execute(q("SELECT * FROM users WHERE id = ?"), (user_id,))
         user_row = cursor.fetchone()
         user = dict(user_row) if user_row else {}
         
@@ -476,7 +573,7 @@ def approve_payment_request(req_id):
         new_expiry = (start_date + timedelta(days=days_to_add)).isoformat()
         now_str = now.isoformat()
         
-        cursor.execute("""
+        cursor.execute(q("""
             UPDATE users 
             SET plan_status = 'premium',
                 plan_type = ?,
@@ -484,15 +581,14 @@ def approve_payment_request(req_id):
                 plan_expires_at = ?,
                 last_seen = ?
             WHERE id = ?
-        """, (plan_type, now_str, new_expiry, now_str, user_id))
+        """), (plan_type, now_str, new_expiry, now_str, user_id))
         
-        cursor.execute("""
+        cursor.execute(q("""
             UPDATE payment_requests 
             SET status = 'approved', reviewed_at = ?
             WHERE id = ?
-        """, (now_str, req_id))
+        """), (now_str, req_id))
         
-        conn.commit()
         return True, {
             "user_id": user_id,
             "username": user.get("username", "User"),
@@ -503,18 +599,17 @@ def approve_payment_request(req_id):
 def reject_payment_request(req_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM payment_requests WHERE id = ?", (req_id,))
+        cursor.execute(q("SELECT * FROM payment_requests WHERE id = ?"), (req_id,))
         req = cursor.fetchone()
         if not req:
             return False, "Request not found"
             
         now_str = now_iso()
-        cursor.execute("""
+        cursor.execute(q("""
             UPDATE payment_requests 
             SET status = 'rejected', reviewed_at = ?
             WHERE id = ?
-        """, (now_str, req_id))
-        conn.commit()
+        """), (now_str, req_id))
         return True, "Rejected"
 
 # ==========================================
@@ -535,8 +630,8 @@ def get_lookup_logs(search_query="", date_filter="", limit=100):
 
         if search_query:
             conditions.append("(l.phone_number LIKE ? OR l.user_id LIKE ? OR u.username LIKE ? OR l.ip_address LIKE ?)")
-            q = f"%{search_query.strip()}%"
-            params.extend([q, q, q, q])
+            q_str = f"%{search_query.strip()}%"
+            params.extend([q_str, q_str, q_str, q_str])
 
         if date_filter:
             conditions.append("l.timestamp LIKE ?")
@@ -548,29 +643,18 @@ def get_lookup_logs(search_query="", date_filter="", limit=100):
         sql += " ORDER BY l.id DESC LIMIT ?"
         params.append(limit)
 
-        cursor.execute(sql, tuple(params))
-        return [dict(r) for r in cursor.fetchall()]
-
-def get_user_search_history(user_id, limit=20):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, phone_number, status, timestamp 
-            FROM lookup_logs 
-            WHERE user_id = ? 
-            ORDER BY id DESC LIMIT ?
-        """, (user_id, limit))
+        cursor.execute(q(sql), tuple(params))
         return [dict(r) for r in cursor.fetchall()]
 
 def get_log_detail(log_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(q("""
             SELECT l.*, u.username, u.email 
             FROM lookup_logs l
             LEFT JOIN users u ON l.user_id = u.id
             WHERE l.id = ?
-        """, (log_id,))
+        """), (log_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -585,23 +669,23 @@ def admin_get_all_users(search_query="", limit=100):
         params = []
         if search_query:
             sql += " WHERE (username LIKE ? OR email LIKE ? OR id LIKE ? OR ip_address LIKE ?)"
-            q = f"%{search_query.strip()}%"
-            params.extend([q, q, q, q])
+            q_str = f"%{search_query.strip()}%"
+            params.extend([q_str, q_str, q_str, q_str])
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
-        cursor.execute(sql, tuple(params))
+        cursor.execute(q(sql), tuple(params))
         return [dict(r) for r in cursor.fetchall()]
 
 def admin_toggle_ban_user(user_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT is_banned FROM users WHERE id = ?", (user_id,))
+        cursor.execute(q("SELECT is_banned FROM users WHERE id = ?"), (user_id,))
         row = cursor.fetchone()
         if not row:
             return False, "User not found"
-        new_state = 0 if row[0] == 1 else 1
-        cursor.execute("UPDATE users SET is_banned = ? WHERE id = ?", (new_state, user_id))
-        conn.commit()
+        is_banned = row["is_banned"] if IS_POSTGRES else row[0]
+        new_state = 0 if is_banned == 1 else 1
+        cursor.execute(q("UPDATE users SET is_banned = ? WHERE id = ?"), (new_state, user_id))
         return True, new_state
 
 def grant_vip_access(user_id, days=7):
@@ -611,7 +695,7 @@ def grant_vip_access(user_id, days=7):
         new_exp = (now + timedelta(days=days)).isoformat()
         now_str = now.isoformat()
 
-        cursor.execute("""
+        cursor.execute(q("""
             UPDATE users 
             SET plan_status = 'premium',
                 plan_type = ?,
@@ -619,41 +703,44 @@ def grant_vip_access(user_id, days=7):
                 plan_expires_at = ?,
                 last_seen = ?
             WHERE id = ?
-        """, (f"{days}days", now_str, new_exp, now_str, user_id))
-        conn.commit()
+        """), (f"{days}days", now_str, new_exp, now_str, user_id))
         return True, new_exp
 
 def reset_user_quota(user_id):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET free_lookups_used = 0 WHERE id = ?", (user_id,))
-        conn.commit()
+        cursor.execute(q("UPDATE users SET free_lookups_used = 0 WHERE id = ?"), (user_id,))
         return True
 
 def get_admin_stats():
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
+        cursor.execute(q("SELECT COUNT(*) as cnt FROM users"))
+        row = cursor.fetchone()
+        total_users = row["cnt"] if IS_POSTGRES else row[0]
         
-        cursor.execute("SELECT COUNT(*) FROM users WHERE plan_status = 'premium'")
-        active_subscribers = cursor.fetchone()[0]
+        cursor.execute(q("SELECT COUNT(*) as cnt FROM users WHERE plan_status = 'premium'"))
+        row = cursor.fetchone()
+        active_subscribers = row["cnt"] if IS_POSTGRES else row[0]
         
-        cursor.execute("SELECT COUNT(*) FROM payment_requests WHERE status = 'pending'")
-        pending_approvals = cursor.fetchone()[0]
+        cursor.execute(q("SELECT COUNT(*) as cnt FROM payment_requests WHERE status = 'pending'"))
+        row = cursor.fetchone()
+        pending_approvals = row["cnt"] if IS_POSTGRES else row[0]
         
-        cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM payment_requests WHERE status = 'approved'")
-        total_revenue = cursor.fetchone()[0]
+        cursor.execute(q("SELECT COALESCE(SUM(amount), 0) as total FROM payment_requests WHERE status = 'approved'"))
+        row = cursor.fetchone()
+        total_revenue = row["total"] if IS_POSTGRES else row[0]
         
-        cursor.execute("SELECT COUNT(*) FROM lookup_logs")
-        total_lookups = cursor.fetchone()[0]
+        cursor.execute(q("SELECT COUNT(*) as cnt FROM lookup_logs"))
+        row = cursor.fetchone()
+        total_lookups = row["cnt"] if IS_POSTGRES else row[0]
         
-        cursor.execute("""
+        cursor.execute(q("""
             SELECT id, username, email, plan_type, plan_expires_at, ip_address 
             FROM users 
             WHERE plan_status = 'premium' 
             ORDER BY plan_expires_at DESC LIMIT 20
-        """)
+        """))
         active_users = [dict(r) for r in cursor.fetchall()]
         
         return {
@@ -662,5 +749,6 @@ def get_admin_stats():
             "pending_approvals": pending_approvals,
             "total_revenue": total_revenue,
             "total_lookups": total_lookups,
-            "active_users": active_users
+            "active_users": active_users,
+            "engine": "PostgreSQL" if IS_POSTGRES else "SQLite"
         }

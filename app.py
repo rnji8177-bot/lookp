@@ -6,10 +6,13 @@ import json
 import time
 import secrets
 import sqlite3
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import threading
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, Response
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, Response, send_file
 import requests
 from dotenv import load_dotenv
 
@@ -26,7 +29,7 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
-# Initialize SQLite database & migrations
+# Initialize database schema & tables
 db.init_db()
 
 # Configuration from .env
@@ -40,6 +43,12 @@ LOOKUP_API_BASE = os.getenv("LOOKUP_API_BASE", "https://anshapi.vercel.app/api/n
 UPI_ID = os.getenv("UPI_ID", "s.maddheshia@ptaxis")
 PAYEE_NAME = os.getenv("PAYEE_NAME", "SANDESH KUMAR MADDHESHIA")
 
+# SMTP Configuration (Optional - for sending real email OTP)
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
+SMTP_USER = os.getenv("SMTP_EMAIL", "")
+SMTP_PASS = os.getenv("SMTP_PASSWORD", "")
+
 # ==========================================
 # In-Memory Rate Limiter (Anti-Brute-Force & Abuse)
 # ==========================================
@@ -48,7 +57,6 @@ RATE_LIMIT_STORE = {}
 def is_rate_limited(bucket_key, max_attempts=5, window_seconds=300):
     now = time.time()
     attempts = RATE_LIMIT_STORE.get(bucket_key, [])
-    # Filter attempts within window
     valid_attempts = [t for t in attempts if now - t < window_seconds]
     if len(valid_attempts) >= max_attempts:
         RATE_LIMIT_STORE[bucket_key] = valid_attempts
@@ -71,7 +79,7 @@ def _dispatch_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=4)
-    except Exception as e:
+    except Exception:
         pass
 
 def send_telegram_message(text):
@@ -89,7 +97,43 @@ def _dispatch_webhook(payload):
 def trigger_webhook_async(payload):
     threading.Thread(target=_dispatch_webhook, args=(payload,), daemon=True).start()
 
+def _send_email_otp_worker(recipient_email, otp_code, username):
+    """Sends OTP via SMTP (Gmail, etc.) if configured"""
+    if not SMTP_USER or not SMTP_PASS:
+        return
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"🔐 Your OSINT Lookup Verification Code: {otp_code}"
+        msg["From"] = f"OSINT Security Gateway <{SMTP_USER}>"
+        msg["To"] = recipient_email
 
+        html = f"""
+        <div style="background:#070a12; color:#f8fafc; font-family:sans-serif; padding:30px; border-radius:12px; max-width:500px; margin:auto; border:1px solid #00f5a0;">
+            <div style="text-align:center; margin-bottom:20px;">
+                <h2 style="color:#00f5a0; margin:0;">OSINT LOOKUP PRO</h2>
+                <p style="color:#94a3b8; font-size:13px;">Security & Identity Verification</p>
+            </div>
+            <p>Hello <b>{username}</b>,</p>
+            <p>Aapka registration complete karne ke liye 6-digit verification code neeche diya gaya hai:</p>
+            <div style="text-align:center; margin:25px 0;">
+                <span style="font-size:32px; font-weight:bold; letter-spacing:6px; color:#00f5a0; background:rgba(0,245,160,0.1); padding:10px 24px; border-radius:8px; border:1px dashed #00f5a0; display:inline-block; font-family:monospace;">
+                    {otp_code}
+                </span>
+            </div>
+            <p style="color:#94a3b8; font-size:12px;">Ye code agle <b>10 minutes</b> tak valid hai. Kripya is code ko kisi ke sath share na karein.</p>
+            <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin:20px 0;">
+            <div style="font-size:11px; color:#64748b; text-align:center;">Telecom Intelligence & Recon Platform</div>
+        </div>
+        """
+        msg.attach(MIMEText(html, "html"))
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, recipient_email, msg.as_string())
+    except Exception as e:
+        print(f"SMTP Email Send Notice: {e}")
+
+def send_email_otp(recipient_email, otp_code, username):
+    threading.Thread(target=_send_email_otp_worker, args=(recipient_email, otp_code, username), daemon=True).start()
 
 # ==========================================
 # Authentication Guard Decorator
@@ -107,7 +151,7 @@ def login_required(f):
     return decorated_function
 
 # ==========================================
-# Health Check Routes (For Antideploy / Cloud probes)
+# Health Check Routes
 # ==========================================
 
 @app.route("/health")
@@ -116,11 +160,12 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "osint-phone-lookup",
+        "database": "PostgreSQL" if db.IS_POSTGRES else "SQLite",
         "timestamp": datetime.utcnow().isoformat()
     }), 200
 
 # ==========================================
-# User Authentication Routes (Register / Login / Logout)
+# User Authentication Routes (Register / OTP / Login)
 # ==========================================
 
 @app.route("/login", methods=["GET"])
@@ -135,57 +180,113 @@ def register_page():
         return redirect(url_for("home"))
     return render_template("auth.html", tab="register")
 
-@app.route("/api/register", methods=["POST"])
-def api_register():
+@app.route("/api/send-otp", methods=["POST"])
+def api_send_otp():
+    """Step 1 of Registration: Validates fields, blocks fake emails, sends 6-digit OTP"""
     ip = get_client_ip()
-    # Rate limit: max 4 registrations per 15 minutes per IP
-    if is_rate_limited(f"reg_{ip}", max_attempts=4, window_seconds=900):
-        return jsonify({"error": "Bahut saare registration attempts! Kripya 15 minute baad prayas karein."}), 429
+    if is_rate_limited(f"reg_otp_{ip}", max_attempts=5, window_seconds=600):
+        return jsonify({"error": "Bahut saare registration requests! Kripya 10 minute baad try karein."}), 429
 
     payload = request.get_json() or {}
     username = payload.get("username", "").strip()
-    email = payload.get("email", "").strip()
+    email = payload.get("email", "").strip().lower()
     password = payload.get("password", "")
     phone = payload.get("phone", "")
     fp = payload.get("fingerprint") or get_device_fingerprint()
 
-    if not username or not email or not password:
-        return jsonify({"error": "Username, email aur password required hain!"}), 400
+    # Generate OTP and save pending record
+    success, msg, otp_code = db.create_pending_otp(username, email, password, phone, ip, fp)
+    if not success:
+        return jsonify({"error": msg}), 400
 
-    success, result = db.register_user(username, email, password, phone, ip, fp)
+    # 1. Send OTP to User's Email via SMTP (if configured)
+    send_email_otp(email, otp_code, username)
+
+    # 2. Instant Alert to Admin Telegram Bot with OTP (so Admin/User always has access)
+    try:
+        tg_otp_msg = f"<b>🔐 NEW REGISTRATION OTP ALERT</b>\n"
+        tg_otp_msg += f"👤 <b>Username:</b> <code>{username}</code>\n"
+        tg_otp_msg += f"📧 <b>Email:</b> <code>{email}</code>\n"
+        tg_otp_msg += f"🔢 <b>OTP Code:</b> <code>{otp_code}</code>\n"
+        tg_otp_msg += f"⏰ <b>Expires in:</b> 10 Minutes\n"
+        tg_otp_msg += f"🌐 <b>IP:</b> <code>{ip}</code>"
+        send_telegram_message(tg_otp_msg)
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "require_otp": True,
+        "email": email,
+        "message": f"6-Digit Verification Code {email} par bhej diya gaya hai!"
+    })
+
+@app.route("/api/verify-otp", methods=["POST"])
+def api_verify_otp():
+    """Step 2 of Registration: Verifies 6-digit OTP and activates user account"""
+    payload = request.get_json() or {}
+    email = payload.get("email", "").strip().lower()
+    otp_code = payload.get("otp_code", "").strip()
+
+    if not email or not otp_code:
+        return jsonify({"error": "Email aur 6-digit OTP code enter karein!"}), 400
+
+    success, result = db.verify_registration_otp(email, otp_code)
     if not success:
         return jsonify({"error": result}), 400
 
     user = result
-    # Automatically log the user in
     session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["role"] = user.get("role", "user")
 
-    # Send telegram alert for new registration
+    # Send telegram welcome alert
     try:
-        reg_msg = f"<b>👤 New User Registered!</b>\n"
+        reg_msg = f"<b>🎉 User Account Verified & Activated!</b>\n"
         reg_msg += f"Username: <b>{user['username']}</b>\n"
         reg_msg += f"Email: <code>{user['email']}</code>\n"
-        reg_msg += f"IP: <code>{ip}</code>\n"
-        reg_msg += f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        reg_msg += f"Free Scans: 3/3 Available\n"
+        reg_msg += f"Database: {db.get_admin_stats()['engine']}"
         send_telegram_message(reg_msg)
     except Exception:
         pass
 
     return jsonify({
         "success": True,
-        "message": "Account successfully created!",
+        "message": "Account verified! Welcome to OSINT Lookup Pro.",
         "redirect": "/",
         "user": user
     })
 
+@app.route("/api/resend-otp", methods=["POST"])
+def api_resend_otp():
+    ip = get_client_ip()
+    if is_rate_limited(f"resend_otp_{ip}", max_attempts=3, window_seconds=300):
+        return jsonify({"error": "Bahut jaldi resend kiya! Kripya 2 minute wait karein."}), 429
+
+    payload = request.get_json() or {}
+    email = payload.get("email", "").strip().lower()
+    
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(db.q("SELECT * FROM pending_registrations WHERE LOWER(email) = LOWER(?)"), (email,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Registration record nahi mila. Dobara register form bharein."}), 400
+        pending = dict(row)
+        otp = pending["otp_code"]
+        username = pending["username"]
+
+    send_email_otp(email, otp, username)
+    send_telegram_message(f"🔄 <b>OTP Resent:</b> <code>{otp}</code> for <code>{email}</code>")
+
+    return jsonify({"success": True, "message": "Naya OTP bhej diya gaya hai!"})
+
 @app.route("/api/login", methods=["POST"])
 def api_login():
     ip = get_client_ip()
-    # Rate limit: max 6 failed logins per 10 minutes per IP
-    if is_rate_limited(f"login_fail_{ip}", max_attempts=6, window_seconds=600):
+    if is_rate_limited(f"login_fail_{ip}", max_attempts=8, window_seconds=600):
         return jsonify({"error": "Too many failed attempts! Security cooldown active. Kripya 10 minute baad try karein."}), 429
 
     payload = request.get_json() or {}
@@ -313,22 +414,17 @@ def user_status():
 @login_required
 def lookup():
     raw_number = request.args.get("number", "")
-    # User ID is strictly retrieved from the authenticated server session
     user_id = session.get("user_id")
     fp = get_device_fingerprint()
     ip = get_client_ip()
 
-    # Rate limiting on lookups: max 12 requests per minute
-    if is_rate_limited(f"lookup_{user_id}_{ip}", max_attempts=12, window_seconds=60):
+    if is_rate_limited(f"lookup_{user_id}_{ip}", max_attempts=15, window_seconds=60):
         return jsonify({
             "error": "RATE_LIMITED",
-            "message": "Aap bahut tezi se searches kar rahe hain! Kripya 30 seconds wait karein."
+            "message": "Aap bahut tezi se searches kar rahe hain! Kripya 20 seconds wait karein."
         }), 429
 
-    # Clean phone number (extract digits only)
     cleaned_number = re.sub(r"\D", "", raw_number)
-    
-    # Handle country code (+91 or 91 prefix)
     if len(cleaned_number) == 12 and cleaned_number.startswith("91"):
         cleaned_number = cleaned_number[2:]
     elif len(cleaned_number) == 11 and cleaned_number.startswith("0"):
@@ -340,7 +436,6 @@ def lookup():
             "message": "Kripya valid 10-digit Indian phone number enter karein (e.g. 9876543210)"
         }), 400
 
-    # 1. Anti-Abuse Check: Authenticated User + Device Fingerprint + IP Quota Check
     can_lookup, reason, user = db.can_user_lookup(user_id, ip, fp)
     if not can_lookup:
         return jsonify({
@@ -351,7 +446,7 @@ def lookup():
             "free_lookups_left": 0
         }), 403
 
-    # 2. Fetch data from OSINT API
+    # Upstream OSINT API Query
     data = None
     try:
         api_url = f"{LOOKUP_API_BASE}?key={LOOKUP_API_KEY}&number={cleaned_number}"
@@ -359,10 +454,9 @@ def lookup():
         if response.status_code == 200:
             data = response.json()
     except Exception as e:
-        print(f"Upstream API lookup error: {e}")
+        print(f"Upstream API lookup notice: {e}")
         data = None
 
-    # Fallback demo simulator for test numbers if upstream times out
     if not data or not isinstance(data, (dict, list)):
         if cleaned_number in ["9876543210", "9999999999", "8888888888", "7777777777", "9123456789"]:
             data = {
@@ -384,18 +478,17 @@ def lookup():
         else:
             return jsonify({
                 "error": "UPSTREAM_TIMEOUT",
-                "message": "Telecom lookup server abhi busy hai ya time out ho raha hai. Kripya 10-15 seconds me dobara prayas karein."
+                "message": "Telecom lookup node abhi busy hai. Kripya 10 seconds baad dobara try karein."
             }), 504
 
-    # 3. Record lookup usage in DB
+    # Record lookup usage
     db.record_lookup_usage(user_id, cleaned_number, ip_address=ip, device_fingerprint=fp, data_payload=data, success=True)
     
-    # Refresh updated user stats
     updated_user = db.get_user_by_id(user_id)
     free_used = updated_user.get("free_lookups_used", 0)
     free_left = max(0, 3 - free_used)
 
-    # 4. Trigger Activepieces Webhook (Non-blocking background thread)
+    # Activepieces Webhook
     trigger_webhook_async({
         "number": cleaned_number,
         "user_id": user_id,
@@ -406,18 +499,16 @@ def lookup():
         "timestamp": datetime.utcnow().isoformat()
     })
 
-
-    # 5. Trigger Telegram Admin Notification
+    # Telegram Notification
     try:
         summary_str = f"<b>🔍 New OSINT Lookup Alert</b>\n"
         summary_str += f"📱 <b>Number:</b> <code>{cleaned_number}</code>\n"
         summary_str += f"👤 <b>User:</b> <b>{session.get('username', user_id)}</b>\n"
         summary_str += f"🌐 <b>IP:</b> <code>{ip}</code>\n"
-        summary_str += f"💎 <b>Plan:</b> {updated_user.get('plan_status', 'free').upper()}\n"
-        summary_str += f"⏰ <b>Time:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        summary_str += f"💎 <b>Plan:</b> {updated_user.get('plan_status', 'free').upper()}"
         send_telegram_message(summary_str)
-    except Exception as e:
-        print(f"Telegram alert error: {e}")
+    except Exception:
+        pass
 
     return jsonify({
         "success": True,
@@ -447,20 +538,16 @@ def submit_payment():
     if not utr or len(utr) < 6:
         return jsonify({"error": "Kripya valid 12-digit UPI UTR / Transaction Reference Number enter karein."}), 400
 
-    # Anti-Cheat: Prevent duplicate UTR submission
     if db.is_utr_already_used(utr):
         return jsonify({"error": "Ye UTR / Reference ID pehle se submit kiya ja chuka hai! Duplicate submission allowed nahi hai."}), 400
 
     amount = 20 if plan_type == "1day" else 120
     plan_title = "1 Day Pass (24 Hours)" if plan_type == "1day" else "7 Days Pass (1 Week)"
 
-    # Create payment request in database
     req = db.create_payment_request(user_id, plan_type, amount, utr, user_note)
     req_id = req["id"]
-
     username = session.get("username", user_id)
 
-    # Send Instant Telegram Alert to Admin with Quick-Approve Link
     host = request.host_url.rstrip('/')
     quick_approve_url = f"{host}/admin/quick-approve?req_id={req_id}&token={ADMIN_SECRET_TOKEN}"
     admin_panel_url = f"{host}/admin"
@@ -472,8 +559,6 @@ def submit_payment():
     msg += f"💳 <b>Plan:</b> <b>{plan_title}</b>\n"
     msg += f"💰 <b>Amount:</b> ₹{amount}\n"
     msg += f"🔢 <b>UTR / Txn Ref:</b> <code>{utr}</code>\n"
-    if user_note:
-        msg += f"📝 <b>Note:</b> {user_note}\n"
     msg += f"⏰ <b>Time:</b> {datetime.utcnow().strftime('%d-%m-%Y %I:%M %p')}\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"👉 <b>1-Click Quick Approve:</b>\n{quick_approve_url}\n\n"
@@ -506,7 +591,6 @@ def admin_panel():
         payment_requests = db.get_all_payment_requests()
         all_users = db.admin_get_all_users(limit=100)
         
-        # Search & Date Filters for Logs
         search_query = request.args.get("q", "").strip()
         date_filter = request.args.get("date", "").strip()
         logs = db.get_lookup_logs(search_query=search_query, date_filter=date_filter, limit=100)
@@ -527,6 +611,18 @@ def admin_panel():
 def admin_logout():
     session.pop("admin_logged_in", None)
     return redirect(url_for("admin_panel"))
+
+@app.route("/admin/download-backup")
+def admin_download_backup():
+    """Allows downloading the SQLite database directly from Admin panel"""
+    if not session.get("admin_logged_in"):
+        return redirect(url_for("admin_panel"))
+    if db.IS_POSTGRES:
+        return "PostgreSQL is active (managed cloud database, backup via your cloud database provider).", 200
+    db_path = db.get_db_path()
+    if os.path.exists(db_path):
+        return send_file(db_path, as_attachment=True, download_name=f"lookup_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db")
+    return "Database file not found", 404
 
 @app.route("/api/payment-review", methods=["POST"])
 @app.route("/admin/action", methods=["POST"])
@@ -594,7 +690,6 @@ def admin_user_action():
     return jsonify({"error": "Invalid action"}), 400
 
 @app.route("/admin/update-key", methods=["POST"])
-@app.route("/admin/change-password", methods=["POST"])
 def admin_change_password():
     if not session.get("admin_logged_in"):
         return jsonify({"error": "Unauthorized"}), 401
@@ -612,7 +707,6 @@ def admin_change_password():
         
     ADMIN_PASSWORD = new_pass
     
-    # Update in .env file securely
     try:
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
         if os.path.exists(env_path):
@@ -628,7 +722,6 @@ def admin_change_password():
         print("Error updating .env password:", e)
 
     send_telegram_message(f"🔐 <b>Admin Password Updated!</b>\nNew password set successfully from IP: <code>{get_client_ip()}</code>")
-
     return jsonify({"success": True, "message": "Password successfully updated!"})
 
 @app.route("/admin/export-logs")

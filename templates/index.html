@@ -314,25 +314,38 @@
         </div>
       </div>
 
-      <!-- Payment Section -->
-      <div class="payment-box">
-        <div class="payment-tabs">
-          <span class="tab-title">Scan QR or Pay directly via UPI:</span>
+      <!-- YouPI-PG Sovereign UPI Payment Station -->
+      <div class="payment-box youpi-station">
+        <div class="youpi-header-strip">
+          <div class="youpi-tag">
+            <span class="pulse-dot"></span>
+            <span>YouPI-PG Sovereign Gateway</span>
+          </div>
+          <div class="youpi-timer" id="youpiTimerBadge" title="Session Timeout">
+            ⏱️ <span id="youpiCountdown">05:00</span>
+          </div>
         </div>
 
         <div class="qr-wrapper">
           <div class="qr-frame">
-            <img src="/static/qr.png" alt="Payment QR Code" class="qr-img">
+            <img id="youpiQrImage" src="/static/qr.png" alt="YouPI Dynamic Payment QR" class="qr-img">
             <div class="qr-corner top-left"></div>
             <div class="qr-corner top-right"></div>
             <div class="qr-corner btm-left"></div>
             <div class="qr-corner btm-right"></div>
+            <div id="qrLoadingOverlay" class="qr-loading-overlay" style="display:none;">
+              <div class="spinner"></div>
+            </div>
           </div>
 
           <div class="pay-details">
             <div class="payee-row">
-              <span class="lbl">Payee:</span>
-              <span class="val">{{ payee_name }}</span>
+              <span class="lbl">Order ID:</span>
+              <code id="youpiOrderIdText" class="val text-gold">Generating...</code>
+            </div>
+            <div class="payee-row">
+              <span class="lbl">Amount:</span>
+              <span id="youpiAmountText" class="val text-cyan" style="font-size:16px; font-weight:800;">₹20.00</span>
             </div>
             <div class="upi-row">
               <span class="lbl">UPI ID:</span>
@@ -340,32 +353,58 @@
               <button class="btn-copy-upi" onclick="copyUPI()">Copy</button>
             </div>
 
-            <!-- Direct UPI App Button -->
-            <a id="directUpiBtn" href="upi://pay?pa={{ upi_id }}&pn=SANDESH%20KUMAR%20MADDHESHIA&am=20&cu=INR&tn=LookupDailyPass" class="btn-upi-app">
-              <span>⚡ Open in PhonePe / GPay / Paytm</span>
+            <!-- Direct 1-Tap UPI Apps Grid -->
+            <div class="youpi-apps-title">⚡ 1-Tap UPI App Launch:</div>
+            <div class="youpi-apps-grid">
+              <a id="btnPhonePe" href="#" class="btn-upi-mini">PhonePe</a>
+              <a id="btnGPay" href="#" class="btn-upi-mini">GPay</a>
+              <a id="btnPaytm" href="#" class="btn-upi-mini">Paytm</a>
+              <a id="btnCred" href="#" class="btn-upi-mini">CRED</a>
+            </div>
+
+            <a id="directUpiBtn" href="#" class="btn-upi-app">
+              <span>⚡ Open Any UPI App (₹20)</span>
             </a>
           </div>
         </div>
+
+        <!-- Real-time Bank Observation Auto-Detector -->
+        <div id="youpiPollingBanner" class="youpi-status-banner">
+          <div class="polling-spin"></div>
+          <div class="polling-info">
+            <span class="polling-text">Waiting for UPI credit alert...</span>
+            <span class="polling-sub">Automated Tri-Channel Bank Observer Active (0% Gateway Fee)</span>
+          </div>
+        </div>
+
+        <!-- External YouPI Checkout Portal Button (if configured) -->
+        <div id="youpiPortalRow" style="display:none; margin-top:10px;">
+          <a id="youpiPortalBtn" href="#" target="_blank" class="btn-youpi-portal">
+            🚀 Open Fullscreen YouPI Checkout Portal ➔
+          </a>
+        </div>
       </div>
 
-      <!-- "I Have Paid" Submission Form -->
+      <!-- "I Have Paid" Fallback Submission Form -->
       <div id="paymentFormSection" class="have-paid-section">
-        <div class="form-title">
-          <span>✅ Payment kar diya? Transaction details submit karein:</span>
-        </div>
-        <div class="form-row">
-          <input 
-            type="text" 
-            id="utrInput" 
-            class="input-utr" 
-            placeholder="Enter 12-digit UPI UTR / Ref Number"
-            maxlength="22"
-          >
-          <button id="submitPayBtn" class="btn-submit-pay" onclick="submitPaymentDetails()">
-            Submit for Approval
-          </button>
-        </div>
-        <div class="form-help">Admin turant verify karke aapka plan activate kar denge.</div>
+        <details class="utr-accordion">
+          <summary class="form-title" style="cursor:pointer; user-select:none;">
+            <span>ℹ️ Bank observer delayed? Manually submit 12-digit UTR Number</span>
+          </summary>
+          <div class="form-row" style="margin-top:10px;">
+            <input 
+              type="text" 
+              id="utrInput" 
+              class="input-utr" 
+              placeholder="Enter 12-digit UPI UTR / Ref Number"
+              maxlength="22"
+            >
+            <button id="submitPayBtn" class="btn-submit-pay" onclick="submitPaymentDetails()">
+              Submit UTR
+            </button>
+          </div>
+          <div class="form-help">Instant admin telegram notification dispatch.</div>
+        </details>
       </div>
 
       <!-- Verification In Progress Box (Dynamic) -->

@@ -579,7 +579,11 @@ function toggleRawView() {
   }
 }
 
-// 5. Pricing & Paywall Modal Controls
+// 5. Pricing & Paywall Modal Controls (YouPI-PG Sovereign Integration)
+let currentYoupiSession = null;
+let youpiTimerInterval = null;
+let youpiStatusPollInterval = null;
+
 function openPricingModal(customSubText = "") {
   if (customSubText) {
     document.getElementById("pricingSub").textContent = customSubText;
@@ -590,9 +594,11 @@ function openPricingModal(customSubText = "") {
 
 function closePricingModal() {
   document.getElementById("pricingModal").style.display = "none";
+  if (youpiTimerInterval) clearInterval(youpiTimerInterval);
+  if (youpiStatusPollInterval) clearInterval(youpiStatusPollInterval);
 }
 
-function selectPlan(plan, amount) {
+async function selectPlan(plan, amount) {
   selectedPlan = plan;
   selectedAmount = amount;
 
@@ -613,12 +619,152 @@ function selectPlan(plan, amount) {
     r1.checked = false;
   }
 
-  // Update Direct UPI Link
-  const upiId = document.getElementById("upiIdText").textContent.trim();
+  const amtText = document.getElementById("youpiAmountText");
+  if (amtText) amtText.textContent = `₹${parseFloat(amount).toFixed(2)}`;
+
+  // Initialize YouPI-PG session
+  await initYoupiOrderSession(plan, amount);
+}
+
+async function initYoupiOrderSession(plan, amount) {
+  if (youpiTimerInterval) clearInterval(youpiTimerInterval);
+  if (youpiStatusPollInterval) clearInterval(youpiStatusPollInterval);
+
+  const orderIdText = document.getElementById("youpiOrderIdText");
+  if (orderIdText) orderIdText.textContent = "Creating...";
+
+  try {
+    const res = await fetch("/api/payment/create-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan_type: plan })
+    });
+    const data = await res.json();
+
+    if (res.ok && data.success && data.order) {
+      currentYoupiSession = data.order;
+      renderYoupiOrderUI(data.order);
+      startYoupiSessionTimer(300);
+      startYoupiPaymentPolling(data.order.paymentId || data.order.orderId);
+    } else {
+      if (orderIdText) orderIdText.textContent = "Local Session";
+      fallbackLocalUpiLinks(plan, amount);
+    }
+  } catch (err) {
+    if (orderIdText) orderIdText.textContent = "Local Session";
+    fallbackLocalUpiLinks(plan, amount);
+  }
+}
+
+function renderYoupiOrderUI(order) {
+  const orderIdText = document.getElementById("youpiOrderIdText");
+  const upiId = order.upi_id || document.getElementById("upiIdText").textContent.trim();
+  const upiUri = order.upi_uri || `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SANDESH%20KUMAR%20MADDHESHIA&am=${order.amount}&cu=INR&tr=${order.orderId}&tn=OSINT%20Pass`;
+
+  if (orderIdText) orderIdText.textContent = order.orderId;
+
+  // Dynamic QR Code for exact amount & order
+  const qrImg = document.getElementById("youpiQrImage");
+  if (qrImg) {
+    const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(upiUri)}`;
+    qrImg.src = qrApi;
+  }
+
+  // 1-Tap UPI App links
+  const rawParams = upiUri.replace("upi://pay?", "");
+  const btnPhonePe = document.getElementById("btnPhonePe");
+  const btnGPay = document.getElementById("btnGPay");
+  const btnPaytm = document.getElementById("btnPaytm");
+  const btnCred = document.getElementById("btnCred");
   const directBtn = document.getElementById("directUpiBtn");
-  const note = plan === "1day" ? "LookupDailyPass" : "LookupWeeklyPass";
-  directBtn.href = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SANDESH%20KUMAR%20MADDHESHIA&am=${amount}&cu=INR&tn=${note}`;
-  directBtn.querySelector("span").textContent = `⚡ Pay ₹${amount} via UPI App`;
+
+  if (btnPhonePe) btnPhonePe.href = `phonepe://pay?${rawParams}`;
+  if (btnGPay) btnGPay.href = `gpay://upi/pay?${rawParams}`;
+  if (btnPaytm) btnPaytm.href = `paytmmp://pay?${rawParams}`;
+  if (btnCred) btnCred.href = `cred://pay?${rawParams}`;
+  if (directBtn) {
+    directBtn.href = upiUri;
+    directBtn.querySelector("span").textContent = `⚡ Open Any UPI App (₹${order.amount})`;
+  }
+
+  const portalRow = document.getElementById("youpiPortalRow");
+  const portalBtn = document.getElementById("youpiPortalBtn");
+  if (order.checkoutUrl && portalRow && portalBtn) {
+    portalBtn.href = order.checkoutUrl;
+    portalRow.style.display = "block";
+  } else if (portalRow) {
+    portalRow.style.display = "none";
+  }
+}
+
+function fallbackLocalUpiLinks(plan, amount) {
+  const upiId = document.getElementById("upiIdText").textContent.trim();
+  const orderId = "ORD_" + Date.now();
+  const upiUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=SANDESH%20KUMAR%20MADDHESHIA&am=${amount}&cu=INR&tr=${orderId}&tn=LookupPass`;
+  renderYoupiOrderUI({
+    orderId: orderId,
+    amount: amount,
+    upi_id: upiId,
+    upi_uri: upiUri
+  });
+}
+
+function startYoupiSessionTimer(seconds) {
+  if (youpiTimerInterval) clearInterval(youpiTimerInterval);
+  let remaining = seconds;
+  const label = document.getElementById("youpiCountdown");
+
+  youpiTimerInterval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(youpiTimerInterval);
+      if (label) label.textContent = "EXPIRED";
+      showToast("⚠️ Session expired. Refreshing payment QR...");
+      selectPlan(selectedPlan, selectedAmount);
+      return;
+    }
+    const mins = String(Math.floor(remaining / 60)).padStart(2, '0');
+    const secs = String(remaining % 60).padStart(2, '0');
+    if (label) label.textContent = `${mins}:${secs}`;
+  }, 1000);
+}
+
+function startYoupiPaymentPolling(paymentId) {
+  if (youpiStatusPollInterval) clearInterval(youpiStatusPollInterval);
+
+  youpiStatusPollInterval = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/payment/status/${encodeURIComponent(paymentId)}`);
+      const data = await res.json();
+
+      if (data && data.status === "SUCCESS") {
+        clearInterval(youpiStatusPollInterval);
+        if (youpiTimerInterval) clearInterval(youpiTimerInterval);
+        onYoupiPaymentVerified();
+      }
+    } catch (e) {
+      // Ignore network jitter
+    }
+  }, 3000);
+}
+
+function onYoupiPaymentVerified() {
+  const banner = document.getElementById("youpiPollingBanner");
+  if (banner) {
+    banner.style.background = "rgba(0, 245, 160, 0.15)";
+    banner.style.borderColor = "#00f5a0";
+    banner.innerHTML = `
+      <div style="font-size:22px;">🎉</div>
+      <div class="polling-info">
+        <span class="polling-text" style="color:#00f5a0; font-size:14px; font-weight:800;">PAYMENT VERIFIED BY BANK!</span>
+        <span class="polling-sub" style="color:#f8fafc;">YouPI-PG Settlement Confirmed. Pro Plan Activated!</span>
+      </div>
+    `;
+  }
+  showToast("🎉 Payment verified! Unlimited intelligence scans unlocked.");
+  setTimeout(() => {
+    window.location.reload();
+  }, 1500);
 }
 
 function copyUPI() {

@@ -1046,6 +1046,154 @@ body {
   margin-top: 6px;
 }
 
+/* YouPI-PG Sovereign Gateway Styles */
+.youpi-station {
+  border: 1px solid rgba(0, 245, 160, 0.25) !important;
+  box-shadow: 0 0 25px rgba(0, 245, 160, 0.08) inset;
+}
+.youpi-header-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.youpi-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 245, 160, 0.1);
+  border: 1px solid rgba(0, 245, 160, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #00f5a0;
+  font-family: 'JetBrains Mono', monospace;
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  background: #00f5a0;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #00f5a0;
+  animation: youpiPulse 1.6s infinite ease-in-out;
+}
+@keyframes youpiPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.8); }
+}
+.youpi-timer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffd700;
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.youpi-apps-title {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+.youpi-apps-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.btn-upi-mini {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 7px 4px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #f8fafc;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  display: block;
+}
+.btn-upi-mini:hover {
+  border-color: #00f5a0;
+  color: #00f5a0;
+  background: rgba(0, 245, 160, 0.12);
+  transform: translateY(-1px);
+}
+.youpi-status-banner {
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: rgba(0, 210, 255, 0.06);
+  border: 1px dashed rgba(0, 210, 255, 0.3);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.polling-spin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0, 210, 255, 0.2);
+  border-top-color: #00d2ff;
+  border-radius: 50%;
+  animation: youpiSpin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes youpiSpin {
+  100% { transform: rotate(360deg); }
+}
+.polling-info {
+  display: flex;
+  flex-direction: column;
+}
+.polling-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #00d2ff;
+}
+.polling-sub {
+  font-size: 10px;
+  color: #64748b;
+}
+.btn-youpi-portal {
+  display: block;
+  text-align: center;
+  padding: 10px;
+  background: rgba(0, 245, 160, 0.15);
+  border: 1px solid #00f5a0;
+  color: #00f5a0;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+.btn-youpi-portal:hover {
+  background: #00f5a0;
+  color: #070a12;
+}
+.utr-accordion {
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.2);
+}
+.utr-accordion summary {
+  color: #94a3b8;
+  font-size: 12px;
+}
+.utr-accordion summary:hover {
+  color: #00f5a0;
+}
+
 /* Verification State Box */
 .verifying-box {
   background: rgba(234, 179, 8, 0.1);

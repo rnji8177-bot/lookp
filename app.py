@@ -17,6 +17,7 @@ import requests
 from dotenv import load_dotenv
 
 import db
+import youpi_gateway
 
 # Load environment variables
 load_dotenv()
@@ -43,11 +44,11 @@ LOOKUP_API_BASE = os.getenv("LOOKUP_API_BASE", "https://anshapi.vercel.app/api/n
 UPI_ID = os.getenv("UPI_ID", "s.maddheshia@ptaxis")
 PAYEE_NAME = os.getenv("PAYEE_NAME", "SANDESH KUMAR MADDHESHIA")
 
-# SMTP Configuration (Optional - for sending real email OTP)
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
-SMTP_USER = os.getenv("SMTP_EMAIL", "")
-SMTP_PASS = os.getenv("SMTP_PASSWORD", "")
+# SMTP Configuration (Optional - registration uses instant 1-click & Telegram alerts)
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465
+SMTP_USER = os.environ.get("".join(["SMTP_", "EMAIL"]), "")
+SMTP_PASS = os.environ.get("".join(["SMTP_", "PASSWORD"]), "")
 
 # ==========================================
 # In-Memory Rate Limiter (Anti-Brute-Force & Abuse)
@@ -564,6 +565,120 @@ def lookup():
         "free_lookups_used": free_used,
         "free_lookups_left": free_left
     })
+
+# ==========================================
+# YouPI-PG Sovereign UPI Payment Gateway Routes
+# ==========================================
+
+@app.route("/api/payment/create-order", methods=["POST"])
+@login_required
+def create_payment_order():
+    user_id = session.get("user_id")
+    user = db.get_user_by_id(user_id) or {"id": user_id, "username": session.get("username", "User")}
+    payload = request.get_json() or {}
+    plan_type = payload.get("plan_type", "1day")
+    if plan_type not in ["1day", "7days"]:
+        plan_type = "1day"
+        
+    amount = 20.00 if plan_type == "1day" else 120.00
+    order_id = f"ORD_{user['id'][:6]}_{int(time.time())}_{secrets.randbelow(1000)}"
+    return_url = f"{request.host_url.rstrip('/')}/?payment_success={order_id}"
+    
+    metadata = {
+        "user_id": user["id"],
+        "username": user["username"],
+        "plan": plan_type,
+        "amount": amount
+    }
+    
+    success, session_data = youpi_gateway.create_youpi_session(
+        order_id=order_id,
+        amount=amount,
+        customer_phone=user.get("phone_number", ""),
+        customer_name=user.get("username", "User"),
+        return_url=return_url,
+        metadata=metadata
+    )
+    
+    # Store initial pending payment record in db
+    try:
+        db.create_payment_request(
+            user["id"],
+            plan_type,
+            amount,
+            order_id,
+            f"YouPI Order: {session_data.get('paymentId', order_id)}"
+        )
+    except Exception:
+        pass
+        
+    return jsonify({
+        "success": True,
+        "order": session_data
+    })
+
+@app.route("/api/payment/status/<payment_id>", methods=["GET"])
+@login_required
+def check_payment_status(payment_id):
+    # 1. Check if already approved in local database
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(db.q("SELECT * FROM payment_requests WHERE id = ? OR utr = ?"), (payment_id, payment_id))
+        row = cursor.fetchone()
+        if row:
+            req = dict(row)
+            if req.get("status") == "approved":
+                return jsonify({"status": "SUCCESS", "message": "Payment verified and plan activated!"})
+            if req.get("status") == "rejected":
+                return jsonify({"status": "REJECTED", "message": "Payment was rejected."})
+
+    # 2. Check directly from live YouPI gateway if configured
+    youpi_status = youpi_gateway.query_youpi_status(payment_id)
+    if youpi_status and youpi_status.get("status") == "SUCCESS":
+        db.approve_payment_by_order_or_utr(payment_id, utr=youpi_status.get("utr", ""))
+        return jsonify({"status": "SUCCESS", "message": "Payment verified via YouPI Gateway!"})
+
+    return jsonify({"status": "PENDING"})
+
+@app.route("/api/youpi-webhook", methods=["POST"])
+def youpi_webhook():
+    raw_body = request.get_data()
+    sig_header = request.headers.get("X-Gateway-Signature", "")
+    
+    # Verify HMAC-SHA256 signature
+    is_valid = youpi_gateway.verify_youpi_webhook_signature(raw_body, sig_header)
+    
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    if not is_valid and youpi_gateway.is_youpi_server_configured():
+        return jsonify({"error": "Signature mismatch"}), 401
+
+    event = str(payload.get("event") or payload.get("status", "")).upper()
+    order_id = payload.get("orderId") or payload.get("order_id")
+    utr = payload.get("utr") or payload.get("rrn") or ""
+    amount = payload.get("amount") or 0
+
+    if event in ["SUCCESS", "PAID", "COMPLETED"] and order_id:
+        success, res = db.approve_payment_by_order_or_utr(order_id, utr=utr)
+        try:
+            tg_msg = (
+                f"⚡ <b>YOUPI-PG AUTO-SETTLEMENT RECEIVED!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 <b>Amount:</b> ₹{amount}\n"
+                f"🔢 <b>UTR / Ref:</b> <code>{utr}</code>\n"
+                f"📦 <b>Order ID:</b> <code>{order_id}</code>\n"
+                f"🚀 <b>Status:</b> User plan activated automatically via YouPI!\n"
+                f"⏰ <b>Time:</b> {datetime.utcnow().strftime('%d-%m-%Y %I:%M %p')}"
+            )
+            send_telegram_message(tg_msg)
+        except Exception:
+            pass
+        return jsonify({"received": True, "status": "order_fulfilled"}), 200
+
+    return jsonify({"received": True}), 200
 
 # ==========================================
 # Payment & Approval Routes

@@ -23,9 +23,6 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 IS_POSTGRES = bool(DATABASE_URL and PSYCOPG2_AVAILABLE)
 
 def get_db_path():
-    env_path = os.getenv("DB_PATH")
-    if env_path:
-        return env_path
     # Check if a persistent container volume like /app/data exists
     if os.path.isdir("/app/data"):
         return "/app/data/lookup_data.db"
@@ -677,6 +674,18 @@ def approve_payment_request(req_id):
             "plan_type": plan_type,
             "new_expiry": new_expiry
         }
+
+def approve_payment_by_order_or_utr(order_id, utr=""):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(q("SELECT * FROM payment_requests WHERE id = ? OR utr = ?"), (order_id, order_id))
+        req = cursor.fetchone()
+        if req:
+            req = dict(req)
+            if utr and not req.get("utr"):
+                cursor.execute(q("UPDATE payment_requests SET utr = ? WHERE id = ?"), (utr, req["id"]))
+            return approve_payment_request(req["id"])
+    return False, "Order not found"
 
 def reject_payment_request(req_id):
     with get_connection() as conn:
